@@ -1,5 +1,3 @@
-// main.c
-#include <stdio.h>
 #include <stdlib.h>
 
 #include "premietac.h"
@@ -7,13 +5,10 @@
 
 int main(void) {
   int fd = uart_init();
-  if (fd < 0) {
+  if (fd < 0)
     return EXIT_FAILURE;
-  }
 
-  // Obrázok, ktorý sa má zobraziť mimo prezentácie
-  premietac_run_raylib(fd, "pozadie.png");
-
+  premietac_run_raylib(fd, "../pozadie.png"); // alebo "pozadie.png" podľa cesty
   uart_close(fd);
   return EXIT_SUCCESS;
 }
