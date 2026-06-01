@@ -50,6 +50,7 @@ static const char *get_current_sloha_text(StavPremietania *stav) {
 }
 
 void premietac_run_raylib(int uart_fd, const char *background_path) {
+  SetConfigFlags(FLAG_FULLSCREEN_MODE);
   // 1) Inicializuj okno – 0,0 = celé plátno aktuálneho monitora
   InitWindow(0, 0, "Premietac");
   SetTargetFPS(60);
