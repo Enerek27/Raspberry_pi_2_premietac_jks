@@ -50,14 +50,15 @@ static const char *get_current_sloha_text(StavPremietania *stav) {
 }
 
 void premietac_run_raylib(int uart_fd, const char *background_path) {
-  SetConfigFlags(FLAG_FULLSCREEN_MODE);
-  // 1) Inicializuj okno – 0,0 = celé plátno aktuálneho monitora
-  InitWindow(0, 0, "Premietac");
-  SetTargetFPS(60);
-  ToggleFullscreen();
+  // Zisti rozlíšenie aktuálneho monitora
+  int monitor = GetCurrentMonitor();            // ktorý monitor[web:93]
+  int screenWidth = GetMonitorWidth(monitor);   // šírka monitora[web:93]
+  int screenHeight = GetMonitorHeight(monitor); // výška monitora[web:93]
 
-  int screenWidth = GetScreenWidth();
-  int screenHeight = GetScreenHeight();
+  // Okno rovno v rozlíšení monitora, bez hraníc
+  SetConfigFlags(FLAG_WINDOW_UNDECORATED); // skryje rám okna[web:112][web:119]
+  InitWindow(screenWidth, screenHeight, "Premietac");
+  SetTargetFPS(60);
 
   // 2) Načítaj pozadie
   Texture2D background = LoadTexture(background_path);
