@@ -1,7 +1,7 @@
 add_executable(app_premietac main.c)
 
 target_link_libraries(
-    premietac
+    app_premietac 
     uart
     raylib
     m          # matematika: sinf, cosf, fmaxf, sqrtf, ...
@@ -9,6 +9,4 @@ target_link_libraries(
     pthread
     dl
     rt
-    X11    
-
-)
+    X11)
