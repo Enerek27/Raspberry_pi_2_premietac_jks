@@ -4,6 +4,7 @@
 
 #include "raylib.h" // potrebuješ mať nainštalovaný raylib
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // Pomocný výpočet obdĺžnika na fullscreen obrázok so zachovaním pomeru strán
@@ -49,11 +50,9 @@ static const char *get_current_sloha_text(StavPremietania *stav) {
 }
 
 void premietac_run_raylib(int uart_fd, const char *background_path) {
-  // 1) Inicializuj okno – 0,0 = celé plátno aktuálneho monitora (raylib >= 4.x)
+  // 1) Inicializuj okno – 0,0 = celé plátno aktuálneho monitora
   InitWindow(0, 0, "Premietac");
   SetTargetFPS(60);
-
-  // Ak chceš mať istotu fullscreen režimu:
   ToggleFullscreen();
 
   int screenWidth = GetScreenWidth();
@@ -72,9 +71,16 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
                             screenHeight, &bgSrc, &bgDst);
   }
 
-  // 3) Stav protokolu
-  StavPremietania stav;
-  stav_init(&stav);
+  // 3) Stav protokolu – DYNAMICKÁ ALOKÁCIA
+  StavPremietania *stav = malloc(sizeof(StavPremietania));
+  if (!stav) {
+    fprintf(stderr, "[Premietac] malloc(StavPremietania) zlyhal\n");
+    if (background.id != 0)
+      UnloadTexture(background);
+    CloseWindow();
+    return;
+  }
+  stav_init(stav);
 
   char line[UART_BUF_SIZE];
   char reasm_buf[REASM_BUF_SIZE];
@@ -90,26 +96,26 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
       break;
     if (len > 0) {
       if (reasm_pridaj_chunk(reasm_buf, &reasm_len, line, &prikaz)) {
-        stav_aplikuj(&stav, &prikaz);
+        stav_aplikuj(stav, &prikaz);
       }
     }
 
     BeginDrawing();
 
-    if (!stav.bezi) {
+    if (!stav->bezi) {
       ClearBackground(BLACK);
       if (background.id != 0) {
         DrawTexturePro(background, bgSrc, bgDst, (Vector2){0, 0}, 0.0f, WHITE);
       }
     } else {
-      if (stav.blackscreen) {
+      if (stav->blackscreen) {
         ClearBackground(BLACK);
       } else {
         ClearBackground(BLACK);
-        const char *txt = get_current_sloha_text(&stav);
+        const char *txt = get_current_sloha_text(stav);
         int textWidth = MeasureText(txt, fontSize);
         int x = (screenWidth - textWidth) / 2;
-        int y = screenHeight / 2 - fontSize / 2;
+        int y = (screenHeight - fontSize) / 2;
         DrawText(txt, x, y, fontSize, WHITE);
       }
     }
@@ -120,4 +126,6 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
   if (background.id != 0)
     UnloadTexture(background);
   CloseWindow();
+
+  free(stav);
 }
