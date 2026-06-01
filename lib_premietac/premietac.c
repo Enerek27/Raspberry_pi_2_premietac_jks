@@ -50,30 +50,27 @@ static const char *get_current_sloha_text(StavPremietania *stav) {
 }
 
 void premietac_run_raylib(int uart_fd, const char *background_path) {
-  // Zisti rozlíšenie aktuálneho monitora
-  int monitor = GetCurrentMonitor();            // ktorý monitor[web:93]
-  int screenWidth = GetMonitorWidth(monitor);   // šírka monitora[web:93]
-  int screenHeight = GetMonitorHeight(monitor); // výška monitora[web:93]
+  // 1) Zisti rozlíšenie aktuálneho monitora
+  int monitor = GetCurrentMonitor();
+  int screenWidth = GetMonitorWidth(monitor);
+  int screenHeight = GetMonitorHeight(monitor);
 
-  // Okno rovno v rozlíšení monitora, bez hraníc
-  SetConfigFlags(FLAG_WINDOW_UNDECORATED); // skryje rám okna[web:112][web:119]
+  // 2) Okno v rozlíšení monitora, bez rámu (prakticky fullscreen)
+  SetConfigFlags(FLAG_WINDOW_UNDECORATED); // žiadny rám okna[web:112]
   InitWindow(screenWidth, screenHeight, "Premietac");
   SetTargetFPS(60);
 
-  // 2) Načítaj pozadie
+  // 3) Načítaj PNG pozadie
   Texture2D background = LoadTexture(background_path);
   if (background.id == 0) {
-    printf("[Premietac] Nepodarilo sa nacitat obrazok '%s'\n", background_path);
+    printf("[Premietac] CHYBA: Nepodarilo sa nacitat obrazok '%s'\n",
+           background_path);
+  } else {
+    printf("[Premietac] OK: nacitane pozadie %s (%d x %d)\n", background_path,
+           background.width, background.height);
   }
 
-  Rectangle bgSrc = {0};
-  Rectangle bgDst = {0};
-  if (background.id != 0) {
-    compute_fullscreen_dest(background.width, background.height, screenWidth,
-                            screenHeight, &bgSrc, &bgDst);
-  }
-
-  // 3) Stav protokolu – DYNAMICKÁ ALOKÁCIA
+  // 4) Stav protokolu – dynamicky
   StavPremietania *stav = malloc(sizeof(StavPremietania));
   if (!stav) {
     fprintf(stderr, "[Premietac] malloc(StavPremietania) zlyhal\n");
@@ -105,11 +102,19 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
     BeginDrawing();
 
     if (!stav->bezi) {
+      // Režim „bez prezentácie“: fullscreen PNG pozadie
       ClearBackground(BLACK);
       if (background.id != 0) {
-        DrawTexturePro(background, bgSrc, bgDst, (Vector2){0, 0}, 0.0f, WHITE);
+        DrawTexturePro(
+            background,
+            (Rectangle){0, 0, (float)background.width,
+                        (float)background.height},
+            (Rectangle){0, 0, (float)screenWidth,
+                        (float)screenHeight}, // natiahni na celú obrazovku
+            (Vector2){0, 0}, 0.0f, WHITE);
       }
     } else {
+      // Režim prezentácie
       if (stav->blackscreen) {
         ClearBackground(BLACK);
       } else {
@@ -128,6 +133,5 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
   if (background.id != 0)
     UnloadTexture(background);
   CloseWindow();
-
   free(stav);
 }
