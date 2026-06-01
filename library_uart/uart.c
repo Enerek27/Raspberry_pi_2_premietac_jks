@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/select.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -68,4 +69,24 @@ int uart_read_line(int fd, char *line, int max_len) {
 
   line[pos] = '\0';
   return pos;
+}
+
+int uart_read_line_nonblock(int fd, char *line, int max_len) {
+  fd_set set;
+  struct timeval tv;
+  FD_ZERO(&set);
+  FD_SET(fd, &set);
+  tv.tv_sec = 0;
+  tv.tv_usec = 0;
+
+  int rv = select(fd + 1, &set, NULL, NULL, &tv);
+  if (rv < 0) {
+    perror("select");
+    return -1;
+  }
+  if (rv == 0) {
+    // Žiadne dáta – neblokuj
+    return 0;
+  }
+  return uart_read_line(fd, line, max_len);
 }
