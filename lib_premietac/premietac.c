@@ -2,7 +2,7 @@
 #include "premietac.h"
 #include "uart.h"
 
-#include "raylib.h" // potrebuješ mať nainštalovaný raylib
+#include "raylib.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,7 +15,6 @@ static void compute_fullscreen_dest(int texW, int texH, int screenW,
   float screenAspect = (float)screenW / (float)screenH;
 
   if (texAspect > screenAspect) {
-    // obraz je širší ako displej -> prispôsob výšku
     float scale = (float)screenH / (float)texH;
     float newW = texW * scale;
     dest->width = newW;
@@ -23,7 +22,6 @@ static void compute_fullscreen_dest(int texW, int texH, int screenW,
     dest->x = (screenW - newW) / 2.0f;
     dest->y = 0.0f;
   } else {
-    // obraz je vyšší -> prispôsob šírku
     float scale = (float)screenW / (float)texW;
     float newH = texH * scale;
     dest->width = (float)screenW;
@@ -50,12 +48,10 @@ static const char *get_current_sloha_text(StavPremietania *stav) {
 }
 
 void premietac_run_raylib(int uart_fd, const char *background_path) {
-  // Rovnaký trik čo fungoval - UNDECORATED je spoľahlivejší na RPi
   SetConfigFlags(FLAG_WINDOW_UNDECORATED);
 
-  InitWindow(800, 600, "Premietac"); // dočasná veľkosť
+  InitWindow(800, 600, "Premietac");
 
-  // Monitor query AŽ PO InitWindow
   int monitor = GetCurrentMonitor();
   int screenWidth = GetMonitorWidth(monitor);
   int screenHeight = GetMonitorHeight(monitor);
@@ -67,7 +63,6 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
 
   SetWindowSize(screenWidth, screenHeight);
   SetWindowPosition(0, 0);
-
   SetTargetFPS(60);
 
   printf("[Premietac] Rozlisenie: %d x %d\n", screenWidth, screenHeight);
@@ -93,7 +88,6 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
   }
   stav_init(stav);
 
-  // Debug - skontroluj počiatočný stav
   printf("[Premietac] stav->bezi po init = %d\n", stav->bezi);
 
   char line[UART_BUF_SIZE];
@@ -115,20 +109,18 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
     }
 
     BeginDrawing();
-    ClearBackground(BLACK); // jeden ClearBackground na začiatku stačí
+    ClearBackground(BLACK);
 
     if (!stav->bezi) {
-      // Pozadie
+      // Režim bez prezentácie: fullscreen PNG so zachovaním pomeru strán
       if (background.id != 0) {
-        DrawTexturePro(
-            background,
-            (Rectangle){0, 0, (float)background.width,
-                        (float)background.height},
-            (Rectangle){0, 0, (float)screenWidth, (float)screenHeight},
-            (Vector2){0, 0}, 0.0f, WHITE);
+        Rectangle src, dest;
+        compute_fullscreen_dest(background.width, background.height,
+                                screenWidth, screenHeight, &src, &dest);
+        DrawTexturePro(background, src, dest, (Vector2){0, 0}, 0.0f, WHITE);
       }
     } else {
-      // Prezentácia
+      // Režim prezentácie
       if (!stav->blackscreen) {
         const char *txt = get_current_sloha_text(stav);
         int textWidth = MeasureText(txt, fontSize);
@@ -136,7 +128,7 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
         int y = (screenHeight - fontSize) / 2;
         DrawText(txt, x, y, fontSize, WHITE);
       }
-      // blackscreen = len čierna, ClearBackground(BLACK) už bolo vyššie
+      // blackscreen = čierna, ClearBackground(BLACK) už bolo vyššie
     }
 
     EndDrawing();
