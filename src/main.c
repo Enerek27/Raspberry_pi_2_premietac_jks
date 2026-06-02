@@ -10,7 +10,7 @@ int main(void) {
 
   // premietac_run_raylib(fd, "../pozadie.png"); // alebo "pozadie.png" podľa
   // cesty
-  testing_ray();
+  testing_ray("../pozadie.png");
   uart_close(fd);
   return EXIT_SUCCESS;
 }

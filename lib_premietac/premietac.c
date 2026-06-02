@@ -50,10 +50,12 @@ static const char *get_current_sloha_text(StavPremietania *stav) {
 }
 
 void premietac_run_raylib(int uart_fd, const char *background_path) {
-  SetConfigFlags(FLAG_FULLSCREEN_MODE);
-  InitWindow(0, 0, "Premietac");
-  SetTargetFPS(60);
+  // Rovnaký trik čo fungoval - UNDECORATED je spoľahlivejší na RPi
+  SetConfigFlags(FLAG_WINDOW_UNDECORATED);
 
+  InitWindow(800, 600, "Premietac"); // dočasná veľkosť
+
+  // Monitor query AŽ PO InitWindow
   int monitor = GetCurrentMonitor();
   int screenWidth = GetMonitorWidth(monitor);
   int screenHeight = GetMonitorHeight(monitor);
@@ -63,9 +65,14 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
     screenHeight = GetScreenHeight();
   }
 
+  SetWindowSize(screenWidth, screenHeight);
+  SetWindowPosition(0, 0);
+
+  SetTargetFPS(60);
+
   printf("[Premietac] Rozlisenie: %d x %d\n", screenWidth, screenHeight);
 
-  // 3) Načítaj PNG pozadie
+  // Načítaj pozadie
   Texture2D background = LoadTexture(background_path);
   if (background.id == 0) {
     printf("[Premietac] CHYBA: Nepodarilo sa nacitat obrazok '%s'\n",
@@ -75,7 +82,7 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
            background.width, background.height);
   }
 
-  // 4) Stav protokolu – dynamicky
+  // Stav
   StavPremietania *stav = malloc(sizeof(StavPremietania));
   if (!stav) {
     fprintf(stderr, "[Premietac] malloc(StavPremietania) zlyhal\n");
@@ -85,6 +92,9 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
     return;
   }
   stav_init(stav);
+
+  // Debug - skontroluj počiatočný stav
+  printf("[Premietac] stav->bezi po init = %d\n", stav->bezi);
 
   char line[UART_BUF_SIZE];
   char reasm_buf[REASM_BUF_SIZE];
@@ -105,31 +115,28 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
     }
 
     BeginDrawing();
+    ClearBackground(BLACK); // jeden ClearBackground na začiatku stačí
 
     if (!stav->bezi) {
-      // Režim „bez prezentácie“: fullscreen PNG pozadie
-      ClearBackground(BLACK);
+      // Pozadie
       if (background.id != 0) {
         DrawTexturePro(
             background,
             (Rectangle){0, 0, (float)background.width,
                         (float)background.height},
-            (Rectangle){0, 0, (float)screenWidth,
-                        (float)screenHeight}, // natiahni na celú obrazovku
+            (Rectangle){0, 0, (float)screenWidth, (float)screenHeight},
             (Vector2){0, 0}, 0.0f, WHITE);
       }
     } else {
-      // Režim prezentácie
-      if (stav->blackscreen) {
-        ClearBackground(BLACK);
-      } else {
-        ClearBackground(BLACK);
+      // Prezentácia
+      if (!stav->blackscreen) {
         const char *txt = get_current_sloha_text(stav);
         int textWidth = MeasureText(txt, fontSize);
         int x = (screenWidth - textWidth) / 2;
         int y = (screenHeight - fontSize) / 2;
         DrawText(txt, x, y, fontSize, WHITE);
       }
+      // blackscreen = len čierna, ClearBackground(BLACK) už bolo vyššie
     }
 
     EndDrawing();
@@ -141,41 +148,39 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
   free(stav);
 }
 
-void testing_ray() {
+void testing_ray(const char *background_path) {
   SetConfigFlags(FLAG_WINDOW_UNDECORATED);
 
-  // Dočasné okno - rozmery monitora zistíme až PO init
-  InitWindow(800, 600, "Fullscreen Image");
+  InitWindow(800, 600, "Testing");
 
   int monitor = GetCurrentMonitor();
   int w = GetMonitorWidth(monitor);
   int h = GetMonitorHeight(monitor);
-  SetWindowSize(w, h);
-  SetWindowPosition(0, 0);
 
-  // Použi absolútnu cestu alebo skontroluj CWD
-  Texture2D texture = LoadTexture("../pozadie.png");
-
-  // Debug - vidíš v termináli
-  if (texture.id == 0) {
-    printf("ERROR: Textúra sa nenačítala! Skontroluj cestu.\n");
-  } else {
-    printf("OK: Textúra načítaná %dx%d\n", texture.width, texture.height);
+  if (w == 0 || h == 0) {
+    w = GetScreenWidth();
+    h = GetScreenHeight();
   }
 
-  SetTargetFPS(10);
+  SetWindowSize(w, h);
+  SetWindowPosition(0, 0);
+  SetTargetFPS(60);
+
+  Texture2D texture = LoadTexture(background_path);
+  if (texture.id == 0) {
+    printf("[Testing] CHYBA: Nepodarilo sa nacitat '%s'\n", background_path);
+  } else {
+    printf("[Testing] OK: %dx%d\n", texture.width, texture.height);
+  }
 
   while (!WindowShouldClose()) {
     BeginDrawing();
     ClearBackground(BLACK);
 
     if (texture.id != 0) {
-      DrawTexturePro(
-          texture,
-          (Rectangle){0, 0, (float)texture.width, (float)texture.height},
-          (Rectangle){0, 0, (float)w, (float)h}, (Vector2){0, 0}, 0.0f, WHITE);
-    } else {
-      DrawText("Textúra sa nenačítala!", 50, 50, 30, RED);
+      Rectangle src, dest;
+      compute_fullscreen_dest(texture.width, texture.height, w, h, &src, &dest);
+      DrawTexturePro(texture, src, dest, (Vector2){0, 0}, 0.0f, WHITE);
     }
 
     EndDrawing();
