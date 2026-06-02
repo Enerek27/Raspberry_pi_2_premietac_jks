@@ -190,19 +190,24 @@ int reasm_pridaj_chunk(char *buf, int *buf_len, const char *chunk,
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- *  POMOCNÁ FUNKCIA – odstráni úvodné čísla z textu slohy
- *  Príklady:
- *    "1 Spievajme..." → "Spievajme..."
- *    "12. Niečo"      → "Niečo"
- *    "2 - Text"       → "Text"
+ *  POMOCNÉ FUNKCIE
  * ═══════════════════════════════════════════════════════════════════════ */
 
+/* Odstráni úvodné čísla z textu slohy */
 static const char *strip_leading_numbers(const char *s) {
   while (*s >= '0' && *s <= '9')
     s++;
   while (*s == ' ' || *s == '\t' || *s == '.' || *s == '-' || *s == ':')
     s++;
   return s;
+}
+
+/* Nahradí všetky výskyty znaku from za to v jednom reťazci */
+static void replace_char_inplace(char *s, char from, char to) {
+  for (; *s; s++) {
+    if (*s == from)
+      *s = to;
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -279,12 +284,22 @@ void stav_aplikuj(StavPremietania *s, const ParseovanyPrikaz *p) {
       fprintf(stderr, "[Stav] Pieseň %d má príliš veľa slôh\n", piesen->id);
       break;
     }
+
     Sloha *sloha = &piesen->slohy[piesen->pocet_sloh++];
     sloha->cislo = p->param1;
 
-    /* Uloží text BEZ úvodných čísel */
+    /* 1) odstráň úvodné čísla zo správy */
     const char *clean = strip_leading_numbers(p->text);
-    snprintf(sloha->text, MAX_TEXT_LEN, "%s", clean);
+
+    /* 2) skopíruj do dočasného buffra, aby sme mohli meniť text */
+    char tmp[MAX_TEXT_LEN];
+    snprintf(tmp, sizeof(tmp), "%s", clean);
+
+    /* 3) nahradiť ^ späť za newline */
+    replace_char_inplace(tmp, '^', '\n');
+
+    /* 4) uložiť finálny text do slohy */
+    snprintf(sloha->text, MAX_TEXT_LEN, "%s", tmp);
 
     printf("[Stav] Uložená strofa %d piesne %d: %.40s%s\n", p->param1,
            piesen->id, sloha->text, strlen(sloha->text) > 40 ? "..." : "");
