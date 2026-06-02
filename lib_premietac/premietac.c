@@ -340,8 +340,7 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
 
   printf("[Premietac] Rozlisenie: %d x %d\n", screenWidth, screenHeight);
 
-  Font uiFont = LoadSlovakFont(
-      "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf", FONT_SIZE_MAX);
+  Font uiFont = LoadSlovakFont("../NotoSans-Bold.ttf", FONT_SIZE_MAX);
 
   Texture2D background = LoadTexture(background_path);
   if (background.id == 0)
