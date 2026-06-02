@@ -142,24 +142,42 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
 }
 
 void testing_ray() {
-  SetConfigFlags(FLAG_WINDOW_UNDECORATED); // žiadna lišta, žiadny rám
+  SetConfigFlags(FLAG_WINDOW_UNDECORATED);
+
+  // Dočasné okno - rozmery monitora zistíme až PO init
+  InitWindow(800, 600, "Fullscreen Image");
 
   int monitor = GetCurrentMonitor();
   int w = GetMonitorWidth(monitor);
   int h = GetMonitorHeight(monitor);
+  SetWindowSize(w, h);
+  SetWindowPosition(0, 0);
 
-  InitWindow(w, h, "Fullscreen Image");
-  SetWindowPosition(0, 0); // umiestni do rohu
-
+  // Použi absolútnu cestu alebo skontroluj CWD
   Texture2D texture = LoadTexture("../pozadie.png");
-  SetTargetFPS(60);
+
+  // Debug - vidíš v termináli
+  if (texture.id == 0) {
+    printf("ERROR: Textúra sa nenačítala! Skontroluj cestu.\n");
+  } else {
+    printf("OK: Textúra načítaná %dx%d\n", texture.width, texture.height);
+  }
+
+  SetTargetFPS(10);
 
   while (!WindowShouldClose()) {
     BeginDrawing();
     ClearBackground(BLACK);
-    DrawTexturePro(
-        texture, (Rectangle){0, 0, (float)texture.width, (float)texture.height},
-        (Rectangle){0, 0, (float)w, (float)h}, (Vector2){0, 0}, 0.0f, WHITE);
+
+    if (texture.id != 0) {
+      DrawTexturePro(
+          texture,
+          (Rectangle){0, 0, (float)texture.width, (float)texture.height},
+          (Rectangle){0, 0, (float)w, (float)h}, (Vector2){0, 0}, 0.0f, WHITE);
+    } else {
+      DrawText("Textúra sa nenačítala!", 50, 50, 30, RED);
+    }
+
     EndDrawing();
   }
 
