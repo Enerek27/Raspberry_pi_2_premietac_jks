@@ -117,6 +117,115 @@ static void *uart_thread(void *arg) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Font s podporou slovenčiny + viacriadkový text
+// ─────────────────────────────────────────────────────────────
+
+// Načítanie fontu s ASCII + slovenské diakritiky
+static Font LoadSlovakFont(const char *path, int fontSize) {
+  int codepoints[256];
+  int count = 0;
+
+  // Základný ASCII rozsah
+  for (int c = 32; c <= 126; c++) {
+    codepoints[count++] = c;
+  }
+
+  // Slovenské znaky (malé + veľké)
+  int extra[] = {
+      0x010D, // č
+      0x010C, // Č
+      0x0161, // š
+      0x0160, // Š
+      0x017E, // ž
+      0x017D, // Ž
+      0x013E, // ľ
+      0x013D, // Ľ
+      0x0165, // ť
+      0x0164, // Ť
+      0x0148, // ň
+      0x0147, // Ň
+      0x00E1, // á
+      0x00C1, // Á
+      0x00E9, // é
+      0x00C9, // É
+      0x00ED, // í
+      0x00CD, // Í
+      0x00F3, // ó
+      0x00D3, // Ó
+      0x00FA, // ú
+      0x00DA, // Ú
+      0x00FD, // ý
+      0x00DD, // Ý
+  };
+  int extraCount = sizeof(extra) / sizeof(extra[0]);
+  for (int i = 0; i < extraCount &&
+                  count < (int)(sizeof(codepoints) / sizeof(codepoints[0]));
+       i++) {
+    codepoints[count++] = extra[i];
+  }
+
+  Font f = LoadFontEx(path, fontSize, codepoints, count);
+  if (f.texture.id == 0) {
+    // fallback – ak by sa font nenačítal
+    return GetFontDefault();
+  }
+  return f;
+}
+
+// Nakreslí text s viacerými riadkami (oddelenými \n), centrovaný na obrazovke
+static void DrawCenteredMultilineText(Font font, const char *text,
+                                      int screenWidth, int screenHeight,
+                                      float fontSize, float lineSpacing,
+                                      Color color) {
+  if (!text || !text[0])
+    return;
+
+  // Spočítaj riadky
+  int lineCount = 1;
+  for (const char *p = text; *p; p++) {
+    if (*p == '\n')
+      lineCount++;
+  }
+
+  float lineHeight = fontSize + lineSpacing;
+  float totalHeight = lineCount * lineHeight - lineSpacing;
+  float startY = (screenHeight - totalHeight) / 2.0f;
+
+  char lineBuf[MAX_TEXT_LEN];
+  int lineIdx = 0;
+  float y = startY;
+
+  const char *p = text;
+  while (*p) {
+    if (*p == '\n') {
+      lineBuf[lineIdx] = '\0';
+
+      Vector2 size = MeasureTextEx(font, lineBuf, fontSize, 0);
+      float x = (screenWidth - size.x) / 2.0f;
+
+      DrawTextEx(font, lineBuf, (Vector2){x, y}, fontSize, 0, color);
+
+      y += lineHeight;
+      lineIdx = 0;
+      p++;
+      continue;
+    }
+
+    if (lineIdx < (int)sizeof(lineBuf) - 1) {
+      lineBuf[lineIdx++] = *p;
+    }
+    p++;
+  }
+
+  if (lineIdx > 0) {
+    lineBuf[lineIdx] = '\0';
+    Vector2 size = MeasureTextEx(font, lineBuf, fontSize, 0);
+    float x = (screenWidth - size.x) / 2.0f;
+    DrawTextEx(font, lineBuf, (Vector2){x, y}, fontSize, 0, color);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 // Premietanie – hlavná funkcia s Raylib loopom
 // ─────────────────────────────────────────────────────────────
 
@@ -165,6 +274,10 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
 
   printf("[Premietac] Rozlisenie: %d x %d\n", screenWidth, screenHeight);
 
+  // Font so slovenskými znakmi – súbor daj vedľa binárky (napr. DejaVuSans.ttf)
+  int fontSize = 48;
+  Font uiFont = LoadSlovakFont("../NotoSans-Regular.ttf", fontSize);
+
   Texture2D background = LoadTexture(background_path);
   if (background.id == 0) {
     printf("[Premietac] CHYBA: Nepodarilo sa nacitat obrazok '%s'\n",
@@ -173,8 +286,6 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
     printf("[Premietac] OK: nacitane pozadie %s (%d x %d)\n", background_path,
            background.width, background.height);
   }
-
-  int fontSize = 48;
 
   // Buffer na text, aby sme nekreslili priamo pointer do zdieľaného stavu
   char txt_buf[MAX_TEXT_LEN];
@@ -208,7 +319,7 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
     // DEBUG: vypíš stav každých pár frame-ov
     static int frameCounter = 0;
     frameCounter++;
-    if (frameCounter % 60 == 0) { // cca raz za sekundu pri 60 FPS
+    if (frameCounter % 60 == 0) {
       printf(
           "[RENDER] bezi=%d blackscreen=%d piesen=%d sloha=%d txt_empty=%d\n",
           bezi, blackscreen, cislo_piesne, cislo_slohy, (txt_buf[0] == '\0'));
@@ -229,10 +340,10 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
     } else {
       // Prezentácia
       if (!blackscreen && txt_buf[0] != '\0') {
-        int textWidth = MeasureText(txt_buf, fontSize);
-        int x = (screenWidth - textWidth) / 2;
-        int y = (screenHeight - fontSize) / 2;
-        DrawText(txt_buf, x, y, fontSize, WHITE);
+        DrawCenteredMultilineText(uiFont, txt_buf, screenWidth, screenHeight,
+                                  (float)fontSize,
+                                  8.0f, // medzera medzi riadkami
+                                  WHITE);
       }
       // blackscreen == 1 => len čierna obrazovka
     }
@@ -247,6 +358,11 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
 
   if (background.id != 0)
     UnloadTexture(background);
+
+  if (uiFont.texture.id != 0 &&
+      uiFont.texture.id != GetFontDefault().texture.id)
+    UnloadFont(uiFont);
+
   CloseWindow();
   free(zs);
 }
