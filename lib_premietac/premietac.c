@@ -77,7 +77,7 @@ static void *uart_thread(void *arg) {
     }
 
     if (len > 0) {
-      // pre debug: printf("[UART] Prijaté: '%s'\n", line);
+      // printf("[UART] Prijaté: '%s'\n", line);
 
       if (reasm_pridaj_chunk(reasm_buf, &reasm_len, line, &prikaz)) {
         printf("[UART] Príkaz: %s\n", typ_prikazu_str(prikaz.typ));
@@ -104,18 +104,28 @@ static void *uart_thread(void *arg) {
 // ─────────────────────────────────────────────────────────────
 
 void premietac_run_raylib(int uart_fd, const char *background_path) {
-  // Inicializácia zdieľaného stavu
-  ZdielanyStav zs;
-  stav_init(&zs.stav);
-  pthread_mutex_init(&zs.mutex, NULL);
-  zs.uart_fd = uart_fd;
-  zs.stop = 0;
+  // 🔹 ZDIELANÝ STAV NA HEAPE (dynamicky), NIE NA ZÁSOBNÍKU
+  ZdielanyStav *zs = malloc(sizeof(ZdielanyStav));
+  if (!zs) {
+    fprintf(stderr, "[Premietac] malloc(ZdielanyStav) zlyhal\n");
+    return;
+  }
+
+  stav_init(&zs->stav);
+  if (pthread_mutex_init(&zs->mutex, NULL) != 0) {
+    fprintf(stderr, "[Premietac] pthread_mutex_init zlyhal\n");
+    free(zs);
+    return;
+  }
+  zs->uart_fd = uart_fd;
+  zs->stop = 0;
 
   // Spusti UART vlákno
   pthread_t tid;
-  if (pthread_create(&tid, NULL, uart_thread, &zs) != 0) {
+  if (pthread_create(&tid, NULL, uart_thread, zs) != 0) {
     fprintf(stderr, "[Premietac] Nepodarilo sa vytvoriť UART vlákno\n");
-    pthread_mutex_destroy(&zs.mutex);
+    pthread_mutex_destroy(&zs->mutex);
+    free(zs);
     return;
   }
 
@@ -162,21 +172,21 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
     txt_buf[0] = '\0';
 
     // Čítanie stavu pod mutexom – čo najkratšie
-    pthread_mutex_lock(&zs.mutex);
+    pthread_mutex_lock(&zs->mutex);
 
-    bezi = zs.stav.bezi;
-    blackscreen = zs.stav.blackscreen;
-    cislo_piesne = zs.stav.cislo_piesne;
-    cislo_slohy = zs.stav.cislo_slohy;
+    bezi = zs->stav.bezi;
+    blackscreen = zs->stav.blackscreen;
+    cislo_piesne = zs->stav.cislo_piesne;
+    cislo_slohy = zs->stav.cislo_slohy;
 
     if (bezi && !blackscreen) {
-      Sloha *sloha = stav_get_sloha(&zs.stav, cislo_piesne, cislo_slohy);
+      Sloha *sloha = stav_get_sloha(&zs->stav, cislo_piesne, cislo_slohy);
       if (sloha) {
         snprintf(txt_buf, sizeof(txt_buf), "%s", sloha->text);
       }
     }
 
-    pthread_mutex_unlock(&zs.mutex);
+    pthread_mutex_unlock(&zs->mutex);
 
     // Render
     BeginDrawing();
@@ -205,13 +215,14 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
   }
 
   // Upratanie
-  zs.stop = 1;
+  zs->stop = 1;
   pthread_join(tid, NULL);
-  pthread_mutex_destroy(&zs.mutex);
+  pthread_mutex_destroy(&zs->mutex);
 
   if (background.id != 0)
     UnloadTexture(background);
   CloseWindow();
+  free(zs);
 }
 
 // ─────────────────────────────────────────────────────────────
