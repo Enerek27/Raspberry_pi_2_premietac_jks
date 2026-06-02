@@ -9,7 +9,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/select.h>
 #include <time.h>
+#include <unistd.h>
 
 // ─────────────────────────────────────────────────────────────
 // Konštanty
@@ -21,7 +23,7 @@
 #define LINE_SPACING 0.15f
 
 // ─────────────────────────────────────────────────────────────
-// Pomocné výpočty
+// Pomocné výpočty (fullscreen obrázok)
 // ─────────────────────────────────────────────────────────────
 
 static void compute_fullscreen_dest(int texW, int texH, int screenW,
@@ -64,48 +66,73 @@ typedef struct {
 } ZdielanyStav;
 
 // ─────────────────────────────────────────────────────────────
-// UART vlákno
+// UART vlákno – STREAM mód (raw bajty → reasm_pridaj_chunk)
 // ─────────────────────────────────────────────────────────────
 
 static void *uart_thread(void *arg) {
   ZdielanyStav *zs = (ZdielanyStav *)arg;
 
-  char raw[256]; // surové bajty z UART
+  char raw[256]; // chunk z UARTu
   char reasm_buf[REASM_BUF_SIZE];
   int reasm_len = 0;
   reasm_buf[0] = '\0';
 
   ParseovanyPrikaz prikaz;
+
   printf("[UART vlákno] Štartujem, fd=%d\n", zs->uart_fd);
 
   while (!zs->stop) {
-    int n = uart_read_available(zs->uart_fd, raw, sizeof(raw));
+    fd_set set;
+    struct timeval tv;
 
-    if (n < 0) {
-      fprintf(stderr, "[UART vlákno] Chyba čítania, končím\n");
+    FD_ZERO(&set);
+    FD_SET(zs->uart_fd, &set);
+    tv.tv_sec = 0;
+    tv.tv_usec = 5 * 1000; // 5 ms timeout
+
+    int rv = select(zs->uart_fd + 1, &set, NULL, NULL, &tv);
+    if (rv < 0) {
+      perror("[UART vlákno] select");
       break;
     }
-
-    if (n == 0) {
-      struct timespec ts = {.tv_sec = 0, .tv_nsec = 2 * 1000000L}; // 2ms
-      nanosleep(&ts, NULL);
+    if (rv == 0) {
+      // nič nové
       continue;
     }
 
-    // Posielame surové bajty do reassembly buffra
-    // reasm_pridaj_chunk očakáva null-terminated string – raw je už ukončený
-    printf("[UART] raw(%d): \"%s\"\n", n, raw);
+    if (!FD_ISSET(zs->uart_fd, &set))
+      continue;
 
-    while (reasm_pridaj_chunk(reasm_buf, &reasm_len, raw, &prikaz)) {
-      printf("[UART] >>> PRIKAZ: typ=%s param1=%d param2=%d\n",
-             typ_prikazu_str(prikaz.typ), prikaz.param1, prikaz.param2);
+    int n = read(zs->uart_fd, raw, sizeof(raw) - 1);
+    if (n < 0) {
+      perror("[UART vlákno] read");
+      break;
+    }
+    if (n == 0) {
+      // zatvorený port?
+      fprintf(stderr, "[UART vlákno] read=0, končím\n");
+      break;
+    }
+
+    raw[n] = '\0';
+    // printf("[UART] raw(%d): \"%s\"\n", n, raw);
+
+    // 1) pridaj chunk do reasm buffra a skús vytiahnuť PRVÚ kompletnú správu
+    int parsed = reasm_pridaj_chunk(reasm_buf, &reasm_len, raw, &prikaz);
+    while (parsed) {
+      // máme kompletný príkaz
+      printf("[UART] >>> PRIKAZ: typ=%s param1=%d param2=%d text_len=%zu\n",
+             typ_prikazu_str(prikaz.typ), prikaz.param1, prikaz.param2,
+             strlen(prikaz.text));
 
       pthread_mutex_lock(&zs->mutex);
       stav_aplikuj(&zs->stav, &prikaz);
       pthread_mutex_unlock(&zs->mutex);
 
-      // Vyprázdni raw aby sme ho nepridávali znova
+      // 2) skús vytiahnuť ďalší príkaz z toho, čo už je v buffri
+      // zavoláme reasm_pridaj_chunk s prázdnym chunkom
       raw[0] = '\0';
+      parsed = reasm_pridaj_chunk(reasm_buf, &reasm_len, raw, &prikaz);
     }
   }
 
@@ -273,7 +300,7 @@ static void DrawCenteredMultilineText(Font font, const char *text,
 }
 
 // ─────────────────────────────────────────────────────────────
-// Hlavná funkcia
+// Hlavná funkcia – Raylib loop
 // ─────────────────────────────────────────────────────────────
 
 void premietac_run_raylib(int uart_fd, const char *background_path) {
