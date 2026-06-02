@@ -9,9 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/select.h>
 #include <time.h>
-#include <unistd.h>
 
 // ─────────────────────────────────────────────────────────────
 // Konštanty
@@ -66,13 +64,14 @@ typedef struct {
 } ZdielanyStav;
 
 // ─────────────────────────────────────────────────────────────
-// UART vlákno – STREAM mód (raw bajty → reasm_pridaj_chunk)
+// UART vlákno – 1 chunk = 1 „riadok“ (cez uart_read_line_nonblock)
+// reasm_pridaj_chunk si už skladá stream vo svojom buffri
 // ─────────────────────────────────────────────────────────────
 
 static void *uart_thread(void *arg) {
   ZdielanyStav *zs = (ZdielanyStav *)arg;
 
-  char raw[256]; // chunk z UARTu
+  char line[UART_BUF_SIZE];
   char reasm_buf[REASM_BUF_SIZE];
   int reasm_len = 0;
   reasm_buf[0] = '\0';
@@ -82,45 +81,24 @@ static void *uart_thread(void *arg) {
   printf("[UART vlákno] Štartujem, fd=%d\n", zs->uart_fd);
 
   while (!zs->stop) {
-    fd_set set;
-    struct timeval tv;
+    int len = uart_read_line_nonblock(zs->uart_fd, line, sizeof(line));
 
-    FD_ZERO(&set);
-    FD_SET(zs->uart_fd, &set);
-    tv.tv_sec = 0;
-    tv.tv_usec = 5 * 1000; // 5 ms timeout
-
-    int rv = select(zs->uart_fd + 1, &set, NULL, NULL, &tv);
-    if (rv < 0) {
-      perror("[UART vlákno] select");
+    if (len < 0) {
+      fprintf(stderr, "[UART vlákno] Chyba čítania, končím\n");
       break;
     }
-    if (rv == 0) {
-      // nič nové
+
+    if (len == 0) {
+      // nič neprišlo – krátky spánok, aby CPU nelietalo
+      struct timespec ts = {.tv_sec = 0, .tv_nsec = 5 * 1000000L}; // 5 ms
+      nanosleep(&ts, NULL);
       continue;
     }
 
-    if (!FD_ISSET(zs->uart_fd, &set))
-      continue;
+    // line je bez \r\n, ukončené '\0'
+    // printf("[UART] riadok(%d): \"%s\"\n", len, line);
 
-    int n = read(zs->uart_fd, raw, sizeof(raw) - 1);
-    if (n < 0) {
-      perror("[UART vlákno] read");
-      break;
-    }
-    if (n == 0) {
-      // zatvorený port?
-      fprintf(stderr, "[UART vlákno] read=0, končím\n");
-      break;
-    }
-
-    raw[n] = '\0';
-    // printf("[UART] raw(%d): \"%s\"\n", n, raw);
-
-    // 1) pridaj chunk do reasm buffra a skús vytiahnuť PRVÚ kompletnú správu
-    int parsed = reasm_pridaj_chunk(reasm_buf, &reasm_len, raw, &prikaz);
-    while (parsed) {
-      // máme kompletný príkaz
+    if (reasm_pridaj_chunk(reasm_buf, &reasm_len, line, &prikaz)) {
       printf("[UART] >>> PRIKAZ: typ=%s param1=%d param2=%d text_len=%zu\n",
              typ_prikazu_str(prikaz.typ), prikaz.param1, prikaz.param2,
              strlen(prikaz.text));
@@ -128,11 +106,6 @@ static void *uart_thread(void *arg) {
       pthread_mutex_lock(&zs->mutex);
       stav_aplikuj(&zs->stav, &prikaz);
       pthread_mutex_unlock(&zs->mutex);
-
-      // 2) skús vytiahnuť ďalší príkaz z toho, čo už je v buffri
-      // zavoláme reasm_pridaj_chunk s prázdnym chunkom
-      raw[0] = '\0';
-      parsed = reasm_pridaj_chunk(reasm_buf, &reasm_len, raw, &prikaz);
     }
   }
 
@@ -180,7 +153,7 @@ static Font LoadSlovakFont(const char *path, int fontSize) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Auto-veľkosť – binárne hľadanie
+// Auto-veľkosť textu
 // ─────────────────────────────────────────────────────────────
 
 static int split_lines(const char *text, const char *lines_start[],
