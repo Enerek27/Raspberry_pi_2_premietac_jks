@@ -8,8 +8,8 @@ target_include_directories(premietac PUBLIC
 
 target_link_libraries(premietac PUBLIC
     protokol
-)
-
-target_link_libraries(premietac PUBLIC
     uart
+    raylib
+    pthread
+    m
 )
