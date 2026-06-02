@@ -16,7 +16,7 @@
 // ─────────────────────────────────────────────────────────────
 
 #define FONT_SIZE_MIN 20
-#define FONT_SIZE_MAX 300
+#define FONT_SIZE_MAX 100 // RPi GPU nezvláda 300 – textura by bola 8192x8192
 #define SCREEN_PADDING 60
 #define LINE_SPACING 0.15f
 
@@ -167,9 +167,10 @@ static Font LoadSlovakFont(const char *path, int fontSize) {
     return GetFontDefault();
   }
 
+  printf("[Font] Načítaný: %s | texture: %dx%d | glyfov: %d\n", path,
+         f.texture.width, f.texture.height, count);
+
   SetTextureFilter(f.texture, TEXTURE_FILTER_BILINEAR);
-  printf("[Font] Načítaný: %s (%d glyfov, texture.id=%d)\n", path, count,
-         f.texture.id);
   return f;
 }
 
@@ -339,11 +340,12 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
 
   printf("[Premietac] Rozlisenie: %d x %d\n", screenWidth, screenHeight);
 
-  Font uiFont = LoadSlovakFont("../NotoSans-Bold.ttf", FONT_SIZE_MAX);
+  Font uiFont = LoadSlovakFont(
+      "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf", FONT_SIZE_MAX);
 
   Texture2D background = LoadTexture(background_path);
   if (background.id == 0)
-    printf("[Premietac] CHYBA: '%s'\n", background_path);
+    printf("[Premietac] CHYBA pozadie: '%s'\n", background_path);
   else
     printf("[Premietac] OK pozadie: %s (%dx%d)\n", background_path,
            background.width, background.height);
@@ -352,9 +354,7 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
   char last_txt[MAX_TEXT_LEN] = "";
   float cached_fontSize = (float)FONT_SIZE_MIN;
 
-  // ── DEBUG režim – zobrazí overlay na obrazovke ──
-  // Zmeň na 0 keď všetko funguje
-  int debug_overlay = 1;
+  int debug_overlay = 1; // zmeň na 0 keď bude fungovať
 
   while (!WindowShouldClose()) {
     int bezi, blackscreen;
@@ -374,7 +374,6 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
     }
     pthread_mutex_unlock(&zs->mutex);
 
-    // Prepočítaj fontSize len keď sa text zmenil
     if (strcmp(txt_buf, last_txt) != 0) {
       strncpy(last_txt, txt_buf, sizeof(last_txt) - 1);
       last_txt[sizeof(last_txt) - 1] = '\0';
@@ -382,7 +381,7 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
       if (txt_buf[0] != '\0')
         cached_fontSize =
             find_optimal_font_size(uiFont, txt_buf, screenWidth, screenHeight);
-      printf("[RENDER] Nový text (fontSize=%.0f): \"%.80s\"\n", cached_fontSize,
+      printf("[RENDER] Novy text (fontSize=%.0f): \"%.80s\"\n", cached_fontSize,
              txt_buf);
     }
 
@@ -390,7 +389,6 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
     ClearBackground(BLACK);
 
     if (!bezi) {
-      // Pozadie keď nepremietame
       if (background.id != 0) {
         Rectangle src, dest;
         compute_fullscreen_dest(background.width, background.height,
@@ -398,26 +396,22 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
         DrawTexturePro(background, src, dest, (Vector2){0, 0}, 0.0f, WHITE);
       }
     } else {
-      // Premietanie textu
       if (!blackscreen && txt_buf[0] != '\0') {
         DrawCenteredMultilineText(uiFont, txt_buf, screenWidth, screenHeight,
                                   cached_fontSize, WHITE);
       }
     }
 
-    // ── DEBUG OVERLAY ──────────────────────────────────────────
+    // DEBUG OVERLAY
     if (debug_overlay) {
-      // Vždy viditeľný test fontu
-      DrawTextEx(uiFont, "Font OK: šČľôäÁÉ", (Vector2){10, 10}, 36, 0, RED);
+      DrawTextEx(uiFont, "Font OK: sClôäÁÉ", (Vector2){10, 10}, 36, 0, RED);
 
-      // Stav systému
       char dbg[256];
       snprintf(dbg, sizeof(dbg),
                "bezi=%d | black=%d | piesen=%d | sloha=%d | fs=%.0f", bezi,
                blackscreen, cislo_piesne, cislo_slohy, cached_fontSize);
       DrawTextEx(uiFont, dbg, (Vector2){10, 56}, 28, 0, YELLOW);
 
-      // Aktuálny text slohy
       if (txt_buf[0] != '\0') {
         char preview[128];
         snprintf(preview, sizeof(preview), "txt: \"%.60s\"", txt_buf);
@@ -426,7 +420,6 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
         DrawTextEx(uiFont, "txt: (prazdny)", (Vector2){10, 94}, 24, 0, ORANGE);
       }
     }
-    // ────────────────────────────────────────────────────────────
 
     EndDrawing();
   }
