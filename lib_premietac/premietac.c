@@ -70,7 +70,7 @@ typedef struct {
 static void *uart_thread(void *arg) {
   ZdielanyStav *zs = (ZdielanyStav *)arg;
 
-  char line[UART_BUF_SIZE];
+  char raw[256]; // surové bajty z UART
   char reasm_buf[REASM_BUF_SIZE];
   int reasm_len = 0;
   reasm_buf[0] = '\0';
@@ -79,37 +79,33 @@ static void *uart_thread(void *arg) {
   printf("[UART vlákno] Štartujem, fd=%d\n", zs->uart_fd);
 
   while (!zs->stop) {
-    int len = uart_read_line_nonblock(zs->uart_fd, line, sizeof(line));
+    int n = uart_read_available(zs->uart_fd, raw, sizeof(raw));
 
-    if (len < 0) {
-      fprintf(stderr, "[UART vlákno] Chyba čítania (len=%d), končím\n", len);
+    if (n < 0) {
+      fprintf(stderr, "[UART vlákno] Chyba čítania, končím\n");
       break;
     }
 
-    if (len > 0) {
-      if (line[len - 1] == '\n' || line[len - 1] == '\r')
-        line[len - 1] = '\0';
-
-      printf("[UART] chunk(len=%d): \"%s\"\n", len, line);
-
-      int kompletne = reasm_pridaj_chunk(reasm_buf, &reasm_len, line, &prikaz);
-      printf("[UART] reasm_len=%d, kompletne=%d\n", reasm_len, kompletne);
-
-      if (kompletne) {
-        printf("[UART] >>> PRIKAZ: typ=%s param1=%d param2=%d text_len=%zu\n",
-               typ_prikazu_str(prikaz.typ), prikaz.param1, prikaz.param2,
-               strlen(prikaz.text));
-
-        pthread_mutex_lock(&zs->mutex);
-        stav_aplikuj(&zs->stav, &prikaz);
-        printf("[UART] Stav: bezi=%d black=%d piesen=%d sloha=%d\n",
-               zs->stav.bezi, zs->stav.blackscreen, zs->stav.cislo_piesne,
-               zs->stav.cislo_slohy);
-        pthread_mutex_unlock(&zs->mutex);
-      }
-    } else {
-      struct timespec ts = {.tv_sec = 0, .tv_nsec = 5 * 1000000L};
+    if (n == 0) {
+      struct timespec ts = {.tv_sec = 0, .tv_nsec = 2 * 1000000L}; // 2ms
       nanosleep(&ts, NULL);
+      continue;
+    }
+
+    // Posielame surové bajty do reassembly buffra
+    // reasm_pridaj_chunk očakáva null-terminated string – raw je už ukončený
+    printf("[UART] raw(%d): \"%s\"\n", n, raw);
+
+    while (reasm_pridaj_chunk(reasm_buf, &reasm_len, raw, &prikaz)) {
+      printf("[UART] >>> PRIKAZ: typ=%s param1=%d param2=%d\n",
+             typ_prikazu_str(prikaz.typ), prikaz.param1, prikaz.param2);
+
+      pthread_mutex_lock(&zs->mutex);
+      stav_aplikuj(&zs->stav, &prikaz);
+      pthread_mutex_unlock(&zs->mutex);
+
+      // Vyprázdni raw aby sme ho nepridávali znova
+      raw[0] = '\0';
     }
   }
 
@@ -129,29 +125,11 @@ static Font LoadSlovakFont(const char *path, int fontSize) {
     codepoints[count++] = c;
 
   int extra[] = {
-      0x010D, 0x010C, // č Č
-      0x0161, 0x0160, // š Š
-      0x017E, 0x017D, // ž Ž
-      0x013E, 0x013D, // ľ Ľ
-      0x0165, 0x0164, // ť Ť
-      0x0148, 0x0147, // ň Ň
-      0x010F, 0x010E, // ď Ď
-      0x0155, 0x0154, // ŕ Ŕ
-      0x013A, 0x0139, // ĺ Ĺ
-      0x00E1, 0x00C1, // á Á
-      0x00E9, 0x00C9, // é É
-      0x00ED, 0x00CD, // í Í
-      0x00F3, 0x00D3, // ó Ó
-      0x00FA, 0x00DA, // ú Ú
-      0x00FD, 0x00DD, // ý Ý
-      0x00F4, 0x00D4, // ô Ô
-      0x00E4, 0x00C4, // ä Ä
-      0x2013,         // –
-      0x2014,         // —
-      0x201E,         // „
-      0x201C,         // "
-      0x00AB,         // «
-      0x00BB,         // »
+      0x010D, 0x010C, 0x0161, 0x0160, 0x017E, 0x017D, 0x013E, 0x013D,
+      0x0165, 0x0164, 0x0148, 0x0147, 0x010F, 0x010E, 0x0155, 0x0154,
+      0x013A, 0x0139, 0x00E1, 0x00C1, 0x00E9, 0x00C9, 0x00ED, 0x00CD,
+      0x00F3, 0x00D3, 0x00FA, 0x00DA, 0x00FD, 0x00DD, 0x00F4, 0x00D4,
+      0x00E4, 0x00C4, 0x2013, 0x2014, 0x201E, 0x201C, 0x00AB, 0x00BB,
   };
 
   int extraCount = sizeof(extra) / sizeof(extra[0]);
@@ -414,48 +392,4 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
 
   CloseWindow();
   free(zs);
-}
-
-// ─────────────────────────────────────────────────────────────
-// Test bez UART
-// ─────────────────────────────────────────────────────────────
-
-void testing_ray(const char *background_path) {
-  SetConfigFlags(FLAG_WINDOW_UNDECORATED);
-  InitWindow(800, 600, "Testing");
-
-  int monitor = GetCurrentMonitor();
-  int w = GetMonitorWidth(monitor);
-  int h = GetMonitorHeight(monitor);
-
-  if (w == 0 || h == 0) {
-    w = GetScreenWidth();
-    h = GetScreenHeight();
-  }
-
-  SetWindowSize(w, h);
-  SetWindowPosition(0, 0);
-  SetTargetFPS(60);
-
-  Texture2D texture = LoadTexture(background_path);
-  if (texture.id == 0)
-    printf("[Testing] CHYBA: '%s'\n", background_path);
-  else
-    printf("[Testing] OK: %dx%d\n", texture.width, texture.height);
-
-  while (!WindowShouldClose()) {
-    BeginDrawing();
-    ClearBackground(BLACK);
-
-    if (texture.id != 0) {
-      Rectangle src, dest;
-      compute_fullscreen_dest(texture.width, texture.height, w, h, &src, &dest);
-      DrawTexturePro(texture, src, dest, (Vector2){0, 0}, 0.0f, WHITE);
-    }
-
-    EndDrawing();
-  }
-
-  UnloadTexture(texture);
-  CloseWindow();
 }

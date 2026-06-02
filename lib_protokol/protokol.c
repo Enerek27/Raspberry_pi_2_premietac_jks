@@ -1,20 +1,19 @@
-// protokol.c
 #include "protokol.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* ═══════════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════
  *  PARSOVANIE
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ═══════════════════════════════════════════════════════════════ */
 
 int protokol_parsuj(const char *sprava, ParseovanyPrikaz *out) {
   if (!sprava || !out)
     return 0;
   memset(out, 0, sizeof(*out));
 
-  /* ── %$X$Y$% príkazy ── */
+  /* %$X$Y$% */
   if (sprava[0] == '%' && sprava[1] == '$') {
     int typ_id, param;
     if (sscanf(sprava, "%%$%d$%d$%%", &typ_id, &param) == 2) {
@@ -42,7 +41,7 @@ int protokol_parsuj(const char *sprava, ParseovanyPrikaz *out) {
     }
   }
 
-  /* ── %|piesen|sloha|% ── */
+  /* %|piesen|sloha|% */
   if (sprava[0] == '%' && sprava[1] == '|') {
     int piesen, sloha;
     if (sscanf(sprava, "%%|%d|%d|%%", &piesen, &sloha) == 2) {
@@ -53,7 +52,7 @@ int protokol_parsuj(const char *sprava, ParseovanyPrikaz *out) {
     }
   }
 
-  /* ── $$cislo$$text%%% ── */
+  /* $$cislo$$text%%% */
   if (strncmp(sprava, "$$", 2) == 0) {
     const char *p = sprava + 2;
     char *end_num;
@@ -73,25 +72,25 @@ int protokol_parsuj(const char *sprava, ParseovanyPrikaz *out) {
   return 0;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════
- *  REASSEMBLY – robustná verzia, hľadá správy v streame
- * ═══════════════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+ *  STREAM REASSEMBLY
+ *  Príjma surové bajty (nie riadky!), hľadá tokeny v streame.
+ * ═══════════════════════════════════════════════════════════════ */
 
 int reasm_pridaj_chunk(char *buf, int *buf_len, const char *chunk,
                        ParseovanyPrikaz *out) {
   int chunk_len = (int)strlen(chunk);
-
   if (chunk_len <= 0)
     return 0;
 
+  // Ak sa chunk nezmestí, zahodíme buffer a začneme odznova
   if (*buf_len + chunk_len >= REASM_BUF_SIZE - 1) {
-    fprintf(stderr, "[reasm] Buffer pretiekol, resetujem\n");
+    fprintf(stderr, "[reasm] Buffer pretiekol (%d+%d), resetujem\n", *buf_len,
+            chunk_len);
     *buf_len = 0;
     buf[0] = '\0';
-    return 0;
   }
 
-  /* Prilep chunk na koniec buffra */
   memcpy(buf + *buf_len, chunk, chunk_len);
   *buf_len += chunk_len;
   buf[*buf_len] = '\0';
@@ -100,14 +99,28 @@ int reasm_pridaj_chunk(char *buf, int *buf_len, const char *chunk,
     if (*buf_len == 0)
       return 0;
 
-    /* 1) Odrež bordel pred začiatkom správy */
-    int start = 0;
-    while (start < *buf_len) {
-      if (buf[start] == '%')
+    /* Odrež všetko pred najbližším platným začiatkom správy */
+    int start = -1;
+    for (int i = 0; i < *buf_len - 1; i++) {
+      // %$ alebo %|
+      if (buf[i] == '%' && (buf[i + 1] == '$' || buf[i + 1] == '|')) {
+        start = i;
         break;
-      if (buf[start] == '$' && start + 1 < *buf_len && buf[start + 1] == '$')
+      }
+      // $$
+      if (buf[i] == '$' && buf[i + 1] == '$') {
+        start = i;
         break;
-      start++;
+      }
+    }
+
+    if (start < 0) {
+      // Nič použiteľné – zachovaj posledný bajt (môže byť začiatok tokenu)
+      char last = buf[*buf_len - 1];
+      buf[0] = last;
+      *buf_len = 1;
+      buf[1] = '\0';
+      return 0;
     }
 
     if (start > 0) {
@@ -116,84 +129,70 @@ int reasm_pridaj_chunk(char *buf, int *buf_len, const char *chunk,
       buf[*buf_len] = '\0';
     }
 
-    if (*buf_len < 2)
-      return 0;
+    if (*buf_len < 4)
+      return 0; // príliš krátke na akúkoľvek správu
 
-    /* 2) Podľa prefixu hľadaj koniec správy */
+    char *end = NULL;
+    int msg_len = 0;
+
     if (buf[0] == '%' && buf[1] == '$') {
-      char *end = strstr(buf, "$%");
+      // Koniec: $%  (ale musí to byť skutočný koniec príkazu)
+      // Hľadáme "$%" počínajúc od pozície 2
+      end = strstr(buf + 2, "$%");
       if (!end)
         return 0;
-
-      int msg_len = (int)(end - buf) + 2;
-      char msg[REASM_BUF_SIZE];
-      if (msg_len >= (int)sizeof(msg))
-        msg_len = (int)sizeof(msg) - 1;
-      memcpy(msg, buf, msg_len);
-      msg[msg_len] = '\0';
-
-      int remaining = *buf_len - msg_len;
-      memmove(buf, buf + msg_len, remaining);
-      *buf_len = remaining;
-      buf[*buf_len] = '\0';
-
-      return protokol_parsuj(msg, out);
+      msg_len = (int)(end - buf) + 2;
 
     } else if (buf[0] == '%' && buf[1] == '|') {
-      char *end = strstr(buf, "|%");
+      end = strstr(buf + 2, "|%");
       if (!end)
         return 0;
-
-      int msg_len = (int)(end - buf) + 2;
-      char msg[REASM_BUF_SIZE];
-      if (msg_len >= (int)sizeof(msg))
-        msg_len = (int)sizeof(msg) - 1;
-      memcpy(msg, buf, msg_len);
-      msg[msg_len] = '\0';
-
-      int remaining = *buf_len - msg_len;
-      memmove(buf, buf + msg_len, remaining);
-      *buf_len = remaining;
-      buf[*buf_len] = '\0';
-
-      return protokol_parsuj(msg, out);
+      msg_len = (int)(end - buf) + 2;
 
     } else if (buf[0] == '$' && buf[1] == '$') {
-      char *end = strstr(buf, "%%%");
+      end = strstr(buf + 2, "%%%");
       if (!end)
         return 0;
-
-      int msg_len = (int)(end - buf) + 3;
-      char msg[REASM_BUF_SIZE];
-      if (msg_len >= (int)sizeof(msg))
-        msg_len = (int)sizeof(msg) - 1;
-      memcpy(msg, buf, msg_len);
-      msg[msg_len] = '\0';
-
-      int remaining = *buf_len - msg_len;
-      memmove(buf, buf + msg_len, remaining);
-      *buf_len = remaining;
-      buf[*buf_len] = '\0';
-
-      return protokol_parsuj(msg, out);
+      msg_len = (int)(end - buf) + 3;
 
     } else {
-      /* Neznámy prefix – zahodíme prvý znak a opakujeme */
+      // Zahodíme prvý bajt a skúsime znova
       memmove(buf, buf + 1, *buf_len - 1);
       (*buf_len)--;
       buf[*buf_len] = '\0';
       continue;
     }
-  }
 
-  return 0;
+    // Skopíruj kompletnú správu
+    if (msg_len >= REASM_BUF_SIZE) {
+      fprintf(stderr, "[reasm] Správa priveľká (%d), zahadzujem\n", msg_len);
+      memmove(buf, buf + msg_len, *buf_len - msg_len);
+      *buf_len -= msg_len;
+      buf[*buf_len] = '\0';
+      continue;
+    }
+
+    char msg[REASM_BUF_SIZE];
+    memcpy(msg, buf, msg_len);
+    msg[msg_len] = '\0';
+
+    // Vymaž spracovanú správu z buffra
+    int remaining = *buf_len - msg_len;
+    memmove(buf, buf + msg_len, remaining);
+    *buf_len = remaining;
+    buf[*buf_len] = '\0';
+
+    if (protokol_parsuj(msg, out)) {
+      return 1; // úspech – volajúci zavolá nás znova ak chce ďalšie
+    }
+    // Neplatná správa – skúsime ďalší token v buffri
+  }
 }
 
-/* ═══════════════════════════════════════════════════════════════════════
- *  POMOCNÉ FUNKCIE
- * ═══════════════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+ *  POMOCNÉ
+ * ═══════════════════════════════════════════════════════════════ */
 
-/* Odstráni úvodné čísla z textu slohy */
 static const char *strip_leading_numbers(const char *s) {
   while (*s >= '0' && *s <= '9')
     s++;
@@ -202,17 +201,15 @@ static const char *strip_leading_numbers(const char *s) {
   return s;
 }
 
-/* Nahradí všetky výskyty znaku from za to v jednom reťazci */
 static void replace_char_inplace(char *s, char from, char to) {
-  for (; *s; s++) {
+  for (; *s; s++)
     if (*s == from)
       *s = to;
-  }
 }
 
-/* ═══════════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════
  *  STAV
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ═══════════════════════════════════════════════════════════════ */
 
 void stav_init(StavPremietania *s) {
   memset(s, 0, sizeof(*s));
@@ -230,20 +227,18 @@ Sloha *stav_get_sloha(StavPremietania *s, int32_t piesen_idx,
   Piesen *p = stav_get_piesen(s, piesen_idx);
   if (!p)
     return NULL;
-  for (int i = 0; i < p->pocet_sloh; i++) {
+  for (int i = 0; i < p->pocet_sloh; i++)
     if (p->slohy[i].cislo == sloha_cislo)
       return &p->slohy[i];
-  }
   return NULL;
 }
 
 static Piesen *db_najdi_alebo_vytvor(DatabazaPiesni *db, int32_t id) {
-  for (int i = 0; i < db->pocet; i++) {
+  for (int i = 0; i < db->pocet; i++)
     if (db->piesne[i].id == id)
       return &db->piesne[i];
-  }
   if (db->pocet >= MAX_PIESNI) {
-    fprintf(stderr, "[DB] Plná databáza piesní!\n");
+    fprintf(stderr, "[DB] Plná databáza!\n");
     return NULL;
   }
   Piesen *p = &db->piesne[db->pocet++];
@@ -258,11 +253,11 @@ void stav_aplikuj(StavPremietania *s, const ParseovanyPrikaz *p) {
   case PRIKAZ_SPUSTI:
     s->bezi = 1;
     s->blackscreen = 0;
-    printf("[Stav] Premietanie SPUSTENÉ\n");
+    printf("[Stav] SPUSTENÉ\n");
     break;
 
   case PRIKAZ_VYPNI:
-    printf("[Stav] Premietanie ZASTAVENÉ, reset databázy\n");
+    printf("[Stav] ZASTAVENÉ, reset\n");
     stav_init(s);
     break;
 
@@ -274,35 +269,28 @@ void stav_aplikuj(StavPremietania *s, const ParseovanyPrikaz *p) {
 
   case PRIKAZ_DATA_STROFY: {
     if (s->cakajuca_piesen_id < 0) {
-      fprintf(stderr, "[Stav] Strofa bez hlavičky piesne, ignorujem\n");
+      fprintf(stderr, "[Stav] Strofa bez hlavičky, ignorujem\n");
       break;
     }
     Piesen *piesen = db_najdi_alebo_vytvor(&s->db, s->cakajuca_piesen_id);
     if (!piesen)
       break;
     if (piesen->pocet_sloh >= MAX_SLOH) {
-      fprintf(stderr, "[Stav] Pieseň %d má príliš veľa slôh\n", piesen->id);
+      fprintf(stderr, "[Stav] Príliš veľa slôh\n");
       break;
     }
 
     Sloha *sloha = &piesen->slohy[piesen->pocet_sloh++];
     sloha->cislo = p->param1;
 
-    /* 1) odstráň úvodné čísla zo správy */
     const char *clean = strip_leading_numbers(p->text);
-
-    /* 2) skopíruj do dočasného buffra, aby sme mohli meniť text */
     char tmp[MAX_TEXT_LEN];
     snprintf(tmp, sizeof(tmp), "%s", clean);
-
-    /* 3) nahradiť ^ späť za newline */
     replace_char_inplace(tmp, '^', '\n');
-
-    /* 4) uložiť finálny text do slohy */
     snprintf(sloha->text, MAX_TEXT_LEN, "%s", tmp);
 
-    printf("[Stav] Uložená strofa %d piesne %d: %.40s%s\n", p->param1,
-           piesen->id, sloha->text, strlen(sloha->text) > 40 ? "..." : "");
+    printf("[Stav] Strofa %d piesne %d: \"%.40s%s\"\n", p->param1, piesen->id,
+           sloha->text, strlen(sloha->text) > 40 ? "..." : "");
     break;
   }
 
@@ -317,17 +305,13 @@ void stav_aplikuj(StavPremietania *s, const ParseovanyPrikaz *p) {
     break;
 
   case PRIKAZ_PREPNI_NA: {
-    int32_t piesen_idx = p->param1;
-    int32_t sloha_cislo = p->param2;
-    s->cislo_piesne = piesen_idx;
-    s->cislo_slohy = sloha_cislo;
-
-    Sloha *sloha = stav_get_sloha(s, piesen_idx, sloha_cislo);
-    printf("[Stav] Prepnuté na pieseň[%d] sloha %d\n", piesen_idx, sloha_cislo);
+    s->cislo_piesne = p->param1;
+    s->cislo_slohy = p->param2;
+    Sloha *sloha = stav_get_sloha(s, p->param1, p->param2);
+    printf("[Stav] Prepnuté na pieseň[%d] sloha %d → %s\n", p->param1,
+           p->param2, sloha ? "OK" : "NENÁJDENÁ");
     if (sloha)
-      printf("[Zobraz] %s\n", sloha->text);
-    else
-      printf("[Zobraz] (sloha nenájdená)\n");
+      printf("[Zobraz] %.60s\n", sloha->text);
     break;
   }
 
@@ -353,6 +337,6 @@ const char *typ_prikazu_str(TypPrikazu t) {
   case PRIKAZ_DATA_STROFY:
     return "DATA_STROFY";
   default:
-    return "NEZNÁMY";
+    return "NEZNAMY";
   }
 }
