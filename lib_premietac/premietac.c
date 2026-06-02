@@ -142,38 +142,24 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
 }
 
 void testing_ray() {
-  // Zisti rozlíšenie monitora
+  SetConfigFlags(FLAG_WINDOW_UNDECORATED); // žiadna lišta, žiadny rám
+
   int monitor = GetCurrentMonitor();
-  int screenWidth = GetMonitorWidth(monitor);
-  int screenHeight = GetMonitorHeight(monitor);
+  int w = GetMonitorWidth(monitor);
+  int h = GetMonitorHeight(monitor);
 
-  // Inicializuj okno
-  InitWindow(screenWidth, screenHeight, "Fullscreen Image");
+  InitWindow(w, h, "Fullscreen Image");
+  SetWindowPosition(0, 0); // umiestni do rohu
 
-  // Prepni na fullscreen
-  ToggleFullscreen();
-
-  // Načítaj obrázok ako textúru
-  Texture2D texture = LoadTexture("../pozadie.png"); // <-- zmeň názov súboru
-
+  Texture2D texture = LoadTexture("../pozadie.png");
   SetTargetFPS(60);
 
   while (!WindowShouldClose()) {
     BeginDrawing();
     ClearBackground(BLACK);
-
-    // Nakresli textúru natiahnutú na celú obrazovku
     DrawTexturePro(
-        texture,
-        (Rectangle){0, 0, (float)texture.width,
-                    (float)texture.height}, // zdrojový obdĺžnik (celá textúra)
-        (Rectangle){0, 0, (float)screenWidth,
-                    (float)screenHeight}, // cieľový obdĺžnik (celá obrazovka)
-        (Vector2){0, 0},                  // pivot
-        0.0f,                             // rotácia
-        WHITE                             // tint
-    );
-
+        texture, (Rectangle){0, 0, (float)texture.width, (float)texture.height},
+        (Rectangle){0, 0, (float)w, (float)h}, (Vector2){0, 0}, 0.0f, WHITE);
     EndDrawing();
   }
 
