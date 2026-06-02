@@ -1,66 +1,21 @@
 // premietac.c
 #include "premietac.h"
-#include "raylib.h"
+#include "protokol.h"
 #include "uart.h"
+
+#include "raylib.h"
 
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h> // nanosleep
 
-// ─── Zdieľaná štruktúra medzi vláknami ───────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Pomocné výpočty a typy
+// ─────────────────────────────────────────────────────────────
 
-typedef struct {
-  StavPremietania stav;
-  pthread_mutex_t mutex;
-  int uart_fd;
-  int stop; // 1 = vlákno má skončiť
-} ZdielanyStav;
-
-// ─── UART vlákno ─────────────────────────────────────────────────────────────
-
-static void *uart_thread(void *arg) {
-  ZdielanyStav *zs = (ZdielanyStav *)arg;
-
-  char line[UART_BUF_SIZE];
-  char reasm_buf[REASM_BUF_SIZE];
-  int reasm_len = 0;
-  reasm_buf[0] = '\0';
-  ParseovanyPrikaz prikaz;
-
-  while (!zs->stop) {
-    // Blokujúce čítanie je OK tu – kreslenie beží v hlavnom vlákne
-    int len = uart_read_line_nonblock(zs->uart_fd, line, sizeof(line));
-
-    if (len < 0) {
-      fprintf(stderr, "[UART vlákno] Chyba čítania, končím\n");
-      break;
-    }
-
-    if (len > 0) {
-      printf("[UART] Prijaté: '%s'\n", line);
-
-      if (reasm_pridaj_chunk(reasm_buf, &reasm_len, line, &prikaz)) {
-        printf("[UART] Kompletný príkaz: %s\n", typ_prikazu_str(prikaz.typ));
-
-        pthread_mutex_lock(&zs->mutex);
-        stav_aplikuj(&zs->stav, &prikaz);
-        pthread_mutex_unlock(&zs->mutex);
-      }
-    } else {
-      // Nič neprišlo – krátka pauza aby sme nezahlcovali CPU
-      struct timespec ts = {0, 5 * 1000000}; // 5 ms
-      nanosleep(&ts, NULL);
-    }
-  }
-
-  printf("[UART vlákno] Skončilo\n");
-  return NULL;
-}
-
-// ─── Pomocné funkcie
-// ──────────────────────────────────────────────────────────
-
+// Pomocný výpočet obdĺžnika na fullscreen obrázok so zachovaním pomeru strán
 static void compute_fullscreen_dest(int texW, int texH, int screenW,
                                     int screenH, Rectangle *src,
                                     Rectangle *dest) {
@@ -68,6 +23,7 @@ static void compute_fullscreen_dest(int texW, int texH, int screenW,
   float screenAspect = (float)screenW / (float)screenH;
 
   if (texAspect > screenAspect) {
+    // obraz je širší -> prispôsob výšku
     float scale = (float)screenH / (float)texH;
     float newW = texW * scale;
     dest->width = newW;
@@ -75,6 +31,7 @@ static void compute_fullscreen_dest(int texW, int texH, int screenW,
     dest->x = (screenW - newW) / 2.0f;
     dest->y = 0.0f;
   } else {
+    // obraz je vyšší -> prispôsob šírku
     float scale = (float)screenW / (float)texW;
     float newH = texH * scale;
     dest->width = (float)screenW;
@@ -89,21 +46,65 @@ static void compute_fullscreen_dest(int texW, int texH, int screenW,
   src->height = (float)texH;
 }
 
-static const char *get_current_sloha_text(StavPremietania *stav) {
-  if (!stav->bezi || stav->blackscreen)
-    return "";
-  Sloha *sloha = stav_get_sloha(stav, stav->cislo_piesne, stav->cislo_slohy);
-  if (!sloha)
-    return "";
-  return sloha->text;
+// Zdieľaný stav medzi UART vláknom a render vláknom
+typedef struct {
+  StavPremietania stav;
+  pthread_mutex_t mutex;
+  int uart_fd;
+  int stop; // 1 = ukonči UART vlákno
+} ZdielanyStav;
+
+// ─────────────────────────────────────────────────────────────
+// UART vlákno – číta sériovku a aplikuje príkazy na stav
+// ─────────────────────────────────────────────────────────────
+
+static void *uart_thread(void *arg) {
+  ZdielanyStav *zs = (ZdielanyStav *)arg;
+
+  char line[UART_BUF_SIZE];
+  char reasm_buf[REASM_BUF_SIZE];
+  int reasm_len = 0;
+  reasm_buf[0] = '\0';
+
+  ParseovanyPrikaz prikaz;
+
+  while (!zs->stop) {
+    int len = uart_read_line_nonblock(zs->uart_fd, line, sizeof(line));
+
+    if (len < 0) {
+      fprintf(stderr, "[UART vlákno] Chyba čítania, končím\n");
+      break;
+    }
+
+    if (len > 0) {
+      // pre debug: printf("[UART] Prijaté: '%s'\n", line);
+
+      if (reasm_pridaj_chunk(reasm_buf, &reasm_len, line, &prikaz)) {
+        printf("[UART] Príkaz: %s\n", typ_prikazu_str(prikaz.typ));
+
+        pthread_mutex_lock(&zs->mutex);
+        stav_aplikuj(&zs->stav, &prikaz);
+        pthread_mutex_unlock(&zs->mutex);
+      }
+    } else {
+      // nič neprišlo, krátky spánok aby CPU nelietalo na 100 %
+      struct timespec ts;
+      ts.tv_sec = 0;
+      ts.tv_nsec = 5 * 1000000L; // 5 ms
+      nanosleep(&ts, NULL);
+    }
+  }
+
+  printf("[UART vlákno] Koniec\n");
+  return NULL;
 }
 
-// ─── Hlavná funkcia
-// ───────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Premietanie – hlavná funkcia s Raylib loopom
+// ─────────────────────────────────────────────────────────────
 
 void premietac_run_raylib(int uart_fd, const char *background_path) {
-
-  // Inicializuj zdieľaný stav
+  // Inicializácia zdieľaného stavu
   ZdielanyStav zs;
   stav_init(&zs.stav);
   pthread_mutex_init(&zs.mutex, NULL);
@@ -118,7 +119,7 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
     return;
   }
 
-  // ── Raylib init ──
+  // Raylib okno (hlavné vlákno)
   SetConfigFlags(FLAG_WINDOW_UNDECORATED);
   InitWindow(800, 600, "Premietac");
 
@@ -135,32 +136,53 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
   SetWindowPosition(0, 0);
   SetTargetFPS(60);
 
-  printf("[Premietac] Rozlíšenie: %d x %d\n", screenWidth, screenHeight);
+  printf("[Premietac] Rozlisenie: %d x %d\n", screenWidth, screenHeight);
 
   Texture2D background = LoadTexture(background_path);
-  if (background.id == 0)
-    printf("[Premietac] CHYBA: Nenačítané pozadie '%s'\n", background_path);
-  else
-    printf("[Premietac] OK: pozadie %dx%d\n", background.width,
-           background.height);
+  if (background.id == 0) {
+    printf("[Premietac] CHYBA: Nepodarilo sa nacitat obrazok '%s'\n",
+           background_path);
+  } else {
+    printf("[Premietac] OK: nacitane pozadie %s (%d x %d)\n", background_path,
+           background.width, background.height);
+  }
 
   int fontSize = 48;
 
-  // Lokálna kópia stavu pre kreslenie – aby sme držali mutex čo najkratšie
-  StavPremietania lokalny_stav;
+  // Buffer na text, aby sme nekreslili priamo pointer do zdieľaného stavu
+  char txt_buf[MAX_TEXT_LEN];
 
-  // ── Render loop ──
   while (!WindowShouldClose()) {
+    // Lokálna kópia základných hodnôt stavu + text v bufri
+    int bezi;
+    int blackscreen;
+    int32_t cislo_piesne;
+    int32_t cislo_slohy;
 
-    // Skopíruj stav pod mutexom
+    txt_buf[0] = '\0';
+
+    // Čítanie stavu pod mutexom – čo najkratšie
     pthread_mutex_lock(&zs.mutex);
-    memcpy(&lokalny_stav, &zs.stav, sizeof(StavPremietania));
+
+    bezi = zs.stav.bezi;
+    blackscreen = zs.stav.blackscreen;
+    cislo_piesne = zs.stav.cislo_piesne;
+    cislo_slohy = zs.stav.cislo_slohy;
+
+    if (bezi && !blackscreen) {
+      Sloha *sloha = stav_get_sloha(&zs.stav, cislo_piesne, cislo_slohy);
+      if (sloha) {
+        snprintf(txt_buf, sizeof(txt_buf), "%s", sloha->text);
+      }
+    }
+
     pthread_mutex_unlock(&zs.mutex);
 
+    // Render
     BeginDrawing();
     ClearBackground(BLACK);
 
-    if (!lokalny_stav.bezi) {
+    if (!bezi) {
       // Pozadie
       if (background.id != 0) {
         Rectangle src, dest;
@@ -169,15 +191,14 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
         DrawTexturePro(background, src, dest, (Vector2){0, 0}, 0.0f, WHITE);
       }
     } else {
-      if (!lokalny_stav.blackscreen) {
-        const char *txt = get_current_sloha_text(&lokalny_stav);
-        if (txt && txt[0] != '\0') {
-          int textWidth = MeasureText(txt, fontSize);
-          int x = (screenWidth - textWidth) / 2;
-          int y = (screenHeight - fontSize) / 2;
-          DrawText(txt, x, y, fontSize, WHITE);
-        }
+      // Prezentácia
+      if (!blackscreen && txt_buf[0] != '\0') {
+        int textWidth = MeasureText(txt_buf, fontSize);
+        int x = (screenWidth - textWidth) / 2;
+        int y = (screenHeight - fontSize) / 2;
+        DrawText(txt_buf, x, y, fontSize, WHITE);
       }
+      // blackscreen == 1 => len čierna obrazovka
     }
 
     EndDrawing();
@@ -192,6 +213,10 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
     UnloadTexture(background);
   CloseWindow();
 }
+
+// ─────────────────────────────────────────────────────────────
+// Jednoduchý test bez UART – len fullscreen obrázok
+// ─────────────────────────────────────────────────────────────
 
 void testing_ray(const char *background_path) {
   SetConfigFlags(FLAG_WINDOW_UNDECORATED);
@@ -211,10 +236,11 @@ void testing_ray(const char *background_path) {
   SetTargetFPS(60);
 
   Texture2D texture = LoadTexture(background_path);
-  if (texture.id == 0)
-    printf("[Testing] CHYBA: '%s'\n", background_path);
-  else
+  if (texture.id == 0) {
+    printf("[Testing] CHYBA: Nepodarilo sa nacitat '%s'\n", background_path);
+  } else {
     printf("[Testing] OK: %dx%d\n", texture.width, texture.height);
+  }
 
   while (!WindowShouldClose()) {
     BeginDrawing();
