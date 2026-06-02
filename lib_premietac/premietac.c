@@ -68,22 +68,39 @@ static void *uart_thread(void *arg) {
 
   ParseovanyPrikaz prikaz;
 
+  printf("[UART vlákno] Štartujem, fd=%d\n", zs->uart_fd);
+
   while (!zs->stop) {
     int len = uart_read_line_nonblock(zs->uart_fd, line, sizeof(line));
 
     if (len < 0) {
-      fprintf(stderr, "[UART vlákno] Chyba čítania, končím\n");
+      fprintf(stderr, "[UART vlákno] Chyba čítania (len=%d), končím\n", len);
       break;
     }
 
     if (len > 0) {
-      // printf("[UART] Prijaté: '%s'\n", line);
+      // odstráň koncový \n/\r pre krajší výpis
+      if (line[len - 1] == '\n' || line[len - 1] == '\r') {
+        line[len - 1] = '\0';
+      }
 
-      if (reasm_pridaj_chunk(reasm_buf, &reasm_len, line, &prikaz)) {
-        printf("[UART] Príkaz: %s\n", typ_prikazu_str(prikaz.typ));
+      printf("[UART] chunk(len=%d): \"%s\"\n", len, line);
+
+      int kompletne = reasm_pridaj_chunk(reasm_buf, &reasm_len, line, &prikaz);
+      printf("[UART] reasm_len=%d, kompletne=%d\n", reasm_len, kompletne);
+
+      if (kompletne) {
+        printf("[UART] >>> PARSOVANY PRIKAZ: typ=%s param1=%d param2=%d "
+               "text_len=%zu\n",
+               typ_prikazu_str(prikaz.typ), prikaz.param1, prikaz.param2,
+               strlen(prikaz.text));
 
         pthread_mutex_lock(&zs->mutex);
         stav_aplikuj(&zs->stav, &prikaz);
+        printf("[UART] Stav po aplikovani: bezi=%d, blackscreen=%d, piesen=%d, "
+               "sloha=%d\n",
+               zs->stav.bezi, zs->stav.blackscreen, zs->stav.cislo_piesne,
+               zs->stav.cislo_slohy);
         pthread_mutex_unlock(&zs->mutex);
       }
     } else {
@@ -104,7 +121,7 @@ static void *uart_thread(void *arg) {
 // ─────────────────────────────────────────────────────────────
 
 void premietac_run_raylib(int uart_fd, const char *background_path) {
-  // 🔹 ZDIELANÝ STAV NA HEAPE (dynamicky), NIE NA ZÁSOBNÍKU
+  // ZDIELANÝ STAV NA HEAPE (dynamicky), nie na zásobníku
   ZdielanyStav *zs = malloc(sizeof(ZdielanyStav));
   if (!zs) {
     fprintf(stderr, "[Premietac] malloc(ZdielanyStav) zlyhal\n");
@@ -187,6 +204,15 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
     }
 
     pthread_mutex_unlock(&zs->mutex);
+
+    // DEBUG: vypíš stav každých pár frame-ov
+    static int frameCounter = 0;
+    frameCounter++;
+    if (frameCounter % 60 == 0) { // cca raz za sekundu pri 60 FPS
+      printf(
+          "[RENDER] bezi=%d blackscreen=%d piesen=%d sloha=%d txt_empty=%d\n",
+          bezi, blackscreen, cislo_piesne, cislo_slohy, (txt_buf[0] == '\0'));
+    }
 
     // Render
     BeginDrawing();
