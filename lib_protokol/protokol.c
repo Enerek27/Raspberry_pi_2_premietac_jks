@@ -1,3 +1,4 @@
+// protokol.c
 #include "protokol.h"
 
 #include <stdio.h>
@@ -87,84 +88,146 @@ int protokol_parsuj(const char *sprava, ParseovanyPrikaz *out) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- *  REASSEMBLY (skladanie chunkov)
+ *  REASSEMBLY (skladanie chunkov) – nová robustná verzia
  * ═══════════════════════════════════════════════════════════════════════
  *
- * Rust posiela dlhé správy rozdelené na kusy ≤31 znakov, každý zakončený \n.
- * Skladáme ich do `buf` a po každom chunku overujeme či je správa kompletná.
+ * Rust posiela správy po kusoch ≤31 znakov, každý chunk má \n.
+ * Tu NERIEŠIME riadky, ale celý stream:
  *
- * Správa je kompletná ak:
- *  - %$X$Y$%   → obsahuje oba '%' ohraničovatele
- *  - %|X|Y|%   → obsahuje oba '%' ohraničovatele
- *  - $$N$$...%%% → obsahuje záver '%%%'
+ *   - buffer `buf` obsahuje všetko doteraz prijaté,
+ *   - každý nový chunk sa len prilepí,
+ *   - potom v buffri hľadáme:
+ *       začiatok správy:  %$   alebo  %|   alebo  $$,
+ *       koniec správy:    $%   alebo  |%   alebo  %%%.
+ *   - keď nájdeme celú správu, vystrihneme ju, posunieme zvyšok, parsujeme.
  */
-
-/* Vráti 1 ak reťazec vyzerá ako kompletná správa */
-static int je_kompletna(const char *buf) {
-  if (buf[0] == '%' && buf[1] == '$') {
-    /* Hľadáme záverečné $% */
-    const char *p = buf + 2;
-    while (*p) {
-      if (p[0] == '$' && p[1] == '%')
-        return 1;
-      p++;
-    }
-    return 0;
-  }
-  if (buf[0] == '%' && buf[1] == '|') {
-    const char *p = buf + 2;
-    while (*p) {
-      if (p[0] == '|' && p[1] == '%')
-        return 1;
-      p++;
-    }
-    return 0;
-  }
-  if (strncmp(buf, "$$", 2) == 0) {
-    return strstr(buf, "%%%") != NULL;
-  }
-  /* Iný formát – považuj za kompletný */
-  return 1;
-}
 
 int reasm_pridaj_chunk(char *buf, int *buf_len, const char *chunk,
                        ParseovanyPrikaz *out) {
   int chunk_len = (int)strlen(chunk);
 
-  /* Ak buffer prázdny a chunk začína novú správu */
-  if (*buf_len == 0 && chunk_len > 0) {
-    /* Detekuj začiatok správy */
-    if (chunk[0] != '%' && strncmp(chunk, "$$", 2) != 0) {
-      /* Neznámy začiatok – zahoď */
-      return 0;
-    }
-  }
+  if (chunk_len <= 0)
+    return 0;
 
-  /* Pridaj chunk do buffra */
+  /* Kapacita buffra */
   if (*buf_len + chunk_len >= REASM_BUF_SIZE - 1) {
-    /* Pretečenie – resetuj */
     fprintf(stderr, "[reasm] Buffer pretiekol, resetujem\n");
     *buf_len = 0;
     buf[0] = '\0';
     return 0;
   }
 
+  /* Prilep chunk na koniec buffra */
   memcpy(buf + *buf_len, chunk, chunk_len);
   *buf_len += chunk_len;
   buf[*buf_len] = '\0';
 
-  if (!je_kompletna(buf)) {
-    return 0; /* Čakáme na ďalšie chunky */
+  for (;;) {
+    if (*buf_len == 0)
+      return 0;
+
+    /* 1) Odstráň bordel pred začiatkom správy (%$, %|, $$) */
+    int start = 0;
+    while (start < *buf_len) {
+      if (buf[start] == '%') {
+        /* potenciálne %$ alebo %| */
+        break;
+      } else if (buf[start] == '$' && start + 1 < *buf_len &&
+                 buf[start + 1] == '$') {
+        /* $$... */
+        break;
+      }
+      start++;
+    }
+
+    if (start > 0) {
+      /* Odrež všetko pred začiatkom */
+      memmove(buf, buf + start, *buf_len - start);
+      *buf_len -= start;
+      buf[*buf_len] = '\0';
+    }
+
+    if (*buf_len == 0)
+      return 0;
+
+    /* 2) Ak nemáme ani 2 znaky, ešte nevieme určiť typ správy */
+    if (*buf_len < 2)
+      return 0;
+
+    /* 3) Zisti typ správy podľa prefixu a hľadaj jej koniec */
+    if (buf[0] == '%' && buf[1] == '$') {
+      /* %$X$Y$% … končí na "$%" */
+      char *end = strstr(buf, "$%");
+      if (!end)
+        return 0; /* čakáme na zvyšok */
+
+      int msg_len = (int)(end - buf) + 2; /* +2 za "$%" */
+      char msg[REASM_BUF_SIZE];
+      if (msg_len >= (int)sizeof(msg))
+        msg_len = (int)sizeof(msg) - 1;
+      memcpy(msg, buf, msg_len);
+      msg[msg_len] = '\0';
+
+      /* Posuň zvyšok buffra */
+      int remaining = *buf_len - msg_len;
+      memmove(buf, buf + msg_len, remaining);
+      *buf_len = remaining;
+      buf[*buf_len] = '\0';
+
+      /* Parsuj */
+      return protokol_parsuj(msg, out);
+
+    } else if (buf[0] == '%' && buf[1] == '|') {
+      /* %|piesen|sloha|% … končí na "|%" */
+      char *end = strstr(buf, "|%");
+      if (!end)
+        return 0;
+
+      int msg_len = (int)(end - buf) + 2; /* +2 za "|%" */
+      char msg[REASM_BUF_SIZE];
+      if (msg_len >= (int)sizeof(msg))
+        msg_len = (int)sizeof(msg) - 1;
+      memcpy(msg, buf, msg_len);
+      msg[msg_len] = '\0';
+
+      int remaining = *buf_len - msg_len;
+      memmove(buf, buf + msg_len, remaining);
+      *buf_len = remaining;
+      buf[*buf_len] = '\0';
+
+      return protokol_parsuj(msg, out);
+
+    } else if (buf[0] == '$' && buf[1] == '$') {
+      /* $$cislo$$text%%% … končí na "%%%" */
+      char *end = strstr(buf, "%%%");
+      if (!end)
+        return 0;
+
+      int msg_len = (int)(end - buf) + 3; /* +3 za "%%%" */
+      char msg[REASM_BUF_SIZE];
+      if (msg_len >= (int)sizeof(msg))
+        msg_len = (int)sizeof(msg) - 1;
+      memcpy(msg, buf, msg_len);
+      msg[msg_len] = '\0';
+
+      int remaining = *buf_len - msg_len;
+      memmove(buf, buf + msg_len, remaining);
+      *buf_len = remaining;
+      buf[*buf_len] = '\0';
+
+      return protokol_parsuj(msg, out);
+
+    } else {
+      /* Neznámy prefix – zahodíme prvý znak a skúsime znova */
+      memmove(buf, buf + 1, *buf_len - 1);
+      (*buf_len)--;
+      buf[*buf_len] = '\0';
+      continue;
+    }
   }
 
-  /* Máme kompletnú správu – parsuj */
-  int ok = protokol_parsuj(buf, out);
-
-  /* Resetuj buffer */
-  *buf_len = 0;
-  buf[0] = '\0';
-
-  return ok;
+  /* Sem by sme sa nemali dostať */
+  return 0;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -220,13 +283,11 @@ void stav_aplikuj(StavPremietania *s, const ParseovanyPrikaz *p) {
     break;
 
   case PRIKAZ_VYPNI:
-    // Reset celého stavu – tým „uvolníš“ všetky piesne
     printf("[Stav] Premietanie ZASTAVENÉ, reset databázy\n");
     stav_init(s);
     break;
 
   case PRIKAZ_POSLI_PIESEN:
-    /* Začiatok príjmu novej piesne – zapamätaj id a priprav slot */
     s->cakajuca_piesen_id = p->param1;
     db_najdi_alebo_vytvor(&s->db, p->param1);
     printf("[Stav] Príjem piesne id=%d\n", p->param1);

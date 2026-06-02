@@ -7,7 +7,7 @@
 #define MAX_PIESNI 100
 #define MAX_SLOH 100
 #define MAX_TEXT_LEN 3000
-#define REASM_BUF_SIZE 2048 /* buffer na skladanie chunkov */
+#define REASM_BUF_SIZE 8192 /* buffer na skladanie chunkov */
 
 /* ── Typy príkazov ───────────────────────────────────────────────────── */
 typedef enum {
