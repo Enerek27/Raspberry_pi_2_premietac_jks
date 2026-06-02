@@ -50,15 +50,20 @@ static const char *get_current_sloha_text(StavPremietania *stav) {
 }
 
 void premietac_run_raylib(int uart_fd, const char *background_path) {
-  // 1) Zisti rozlíšenie aktuálneho monitora
+  SetConfigFlags(FLAG_FULLSCREEN_MODE);
+  InitWindow(0, 0, "Premietac");
+  SetTargetFPS(60);
+
   int monitor = GetCurrentMonitor();
   int screenWidth = GetMonitorWidth(monitor);
   int screenHeight = GetMonitorHeight(monitor);
 
-  // 2) Okno v rozlíšení monitora, bez rámu (prakticky fullscreen)
-  SetConfigFlags(FLAG_WINDOW_UNDECORATED); // žiadny rám okna[web:112]
-  InitWindow(screenWidth, screenHeight, "Premietac");
-  SetTargetFPS(60);
+  if (screenWidth == 0 || screenHeight == 0) {
+    screenWidth = GetScreenWidth();
+    screenHeight = GetScreenHeight();
+  }
+
+  printf("[Premietac] Rozlisenie: %d x %d\n", screenWidth, screenHeight);
 
   // 3) Načítaj PNG pozadie
   Texture2D background = LoadTexture(background_path);
@@ -134,4 +139,44 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
     UnloadTexture(background);
   CloseWindow();
   free(stav);
+}
+
+void testing_ray() {
+  // Zisti rozlíšenie monitora
+  int monitor = GetCurrentMonitor();
+  int screenWidth = GetMonitorWidth(monitor);
+  int screenHeight = GetMonitorHeight(monitor);
+
+  // Inicializuj okno
+  InitWindow(screenWidth, screenHeight, "Fullscreen Image");
+
+  // Prepni na fullscreen
+  ToggleFullscreen();
+
+  // Načítaj obrázok ako textúru
+  Texture2D texture = LoadTexture("../pozadie.png"); // <-- zmeň názov súboru
+
+  SetTargetFPS(60);
+
+  while (!WindowShouldClose()) {
+    BeginDrawing();
+    ClearBackground(BLACK);
+
+    // Nakresli textúru natiahnutú na celú obrazovku
+    DrawTexturePro(
+        texture,
+        (Rectangle){0, 0, (float)texture.width,
+                    (float)texture.height}, // zdrojový obdĺžnik (celá textúra)
+        (Rectangle){0, 0, (float)screenWidth,
+                    (float)screenHeight}, // cieľový obdĺžnik (celá obrazovka)
+        (Vector2){0, 0},                  // pivot
+        0.0f,                             // rotácia
+        WHITE                             // tint
+    );
+
+    EndDrawing();
+  }
+
+  UnloadTexture(texture);
+  CloseWindow();
 }

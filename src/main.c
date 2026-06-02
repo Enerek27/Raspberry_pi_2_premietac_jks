@@ -8,7 +8,9 @@ int main(void) {
   if (fd < 0)
     return EXIT_FAILURE;
 
-  premietac_run_raylib(fd, "../pozadie.png"); // alebo "pozadie.png" podľa cesty
+  // premietac_run_raylib(fd, "../pozadie.png"); // alebo "pozadie.png" podľa
+  // cesty
+  testing_ray();
   uart_close(fd);
   return EXIT_SUCCESS;
 }
