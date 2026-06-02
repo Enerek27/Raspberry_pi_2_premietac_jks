@@ -16,7 +16,7 @@
 // ─────────────────────────────────────────────────────────────
 
 #define FONT_SIZE_MIN 20
-#define FONT_SIZE_MAX 100 // RPi GPU nezvláda 300 – textura by bola 8192x8192
+#define FONT_SIZE_MAX 100
 #define SCREEN_PADDING 60
 #define LINE_SPACING 0.15f
 
@@ -340,7 +340,8 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
 
   printf("[Premietac] Rozlisenie: %d x %d\n", screenWidth, screenHeight);
 
-  Font uiFont = LoadSlovakFont("../NotoSans-Bold.ttf", FONT_SIZE_MAX);
+  Font uiFont = LoadSlovakFont(
+      "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf", FONT_SIZE_MAX);
 
   Texture2D background = LoadTexture(background_path);
   if (background.id == 0)
@@ -352,8 +353,6 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
   char txt_buf[MAX_TEXT_LEN];
   char last_txt[MAX_TEXT_LEN] = "";
   float cached_fontSize = (float)FONT_SIZE_MIN;
-
-  int debug_overlay = 1; // zmeň na 0 keď bude fungovať
 
   while (!WindowShouldClose()) {
     int bezi, blackscreen;
@@ -398,25 +397,6 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
       if (!blackscreen && txt_buf[0] != '\0') {
         DrawCenteredMultilineText(uiFont, txt_buf, screenWidth, screenHeight,
                                   cached_fontSize, WHITE);
-      }
-    }
-
-    // DEBUG OVERLAY
-    if (debug_overlay) {
-      DrawTextEx(uiFont, "Font OK: sClôäÁÉ", (Vector2){10, 10}, 36, 0, RED);
-
-      char dbg[256];
-      snprintf(dbg, sizeof(dbg),
-               "bezi=%d | black=%d | piesen=%d | sloha=%d | fs=%.0f", bezi,
-               blackscreen, cislo_piesne, cislo_slohy, cached_fontSize);
-      DrawTextEx(uiFont, dbg, (Vector2){10, 56}, 28, 0, YELLOW);
-
-      if (txt_buf[0] != '\0') {
-        char preview[128];
-        snprintf(preview, sizeof(preview), "txt: \"%.60s\"", txt_buf);
-        DrawTextEx(uiFont, preview, (Vector2){10, 94}, 24, 0, GREEN);
-      } else {
-        DrawTextEx(uiFont, "txt: (prazdny)", (Vector2){10, 94}, 24, 0, ORANGE);
       }
     }
 
