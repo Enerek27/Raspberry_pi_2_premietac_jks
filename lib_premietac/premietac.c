@@ -9,13 +9,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h> // nanosleep
+#include <time.h>
+
+// ─────────────────────────────────────────────────────────────
+// Konštanty
+// ─────────────────────────────────────────────────────────────
+
+#define FONT_SIZE_MIN 20
+#define FONT_SIZE_MAX 300
+#define SCREEN_PADDING 60  // okraj od kraja obrazovky (px)
+#define LINE_SPACING 0.15f // medzera medzi riadkami ako násobok fontSize
 
 // ─────────────────────────────────────────────────────────────
 // Pomocné výpočty a typy
 // ─────────────────────────────────────────────────────────────
 
-// Pomocný výpočet obdĺžnika na fullscreen obrázok so zachovaním pomeru strán
 static void compute_fullscreen_dest(int texW, int texH, int screenW,
                                     int screenH, Rectangle *src,
                                     Rectangle *dest) {
@@ -23,7 +31,6 @@ static void compute_fullscreen_dest(int texW, int texH, int screenW,
   float screenAspect = (float)screenW / (float)screenH;
 
   if (texAspect > screenAspect) {
-    // obraz je širší -> prispôsob výšku
     float scale = (float)screenH / (float)texH;
     float newW = texW * scale;
     dest->width = newW;
@@ -31,7 +38,6 @@ static void compute_fullscreen_dest(int texW, int texH, int screenW,
     dest->x = (screenW - newW) / 2.0f;
     dest->y = 0.0f;
   } else {
-    // obraz je vyšší -> prispôsob šírku
     float scale = (float)screenW / (float)texW;
     float newH = texH * scale;
     dest->width = (float)screenW;
@@ -46,16 +52,15 @@ static void compute_fullscreen_dest(int texW, int texH, int screenW,
   src->height = (float)texH;
 }
 
-// Zdieľaný stav medzi UART vláknom a render vláknom
 typedef struct {
   StavPremietania stav;
   pthread_mutex_t mutex;
   int uart_fd;
-  int stop; // 1 = ukonči UART vlákno
+  int stop;
 } ZdielanyStav;
 
 // ─────────────────────────────────────────────────────────────
-// UART vlákno – číta sériovku a aplikuje príkazy na stav
+// UART vlákno
 // ─────────────────────────────────────────────────────────────
 
 static void *uart_thread(void *arg) {
@@ -79,10 +84,8 @@ static void *uart_thread(void *arg) {
     }
 
     if (len > 0) {
-      // odstráň koncový \n/\r pre krajší výpis
-      if (line[len - 1] == '\n' || line[len - 1] == '\r') {
+      if (line[len - 1] == '\n' || line[len - 1] == '\r')
         line[len - 1] = '\0';
-      }
 
       printf("[UART] chunk(len=%d): \"%s\"\n", len, line);
 
@@ -104,10 +107,9 @@ static void *uart_thread(void *arg) {
         pthread_mutex_unlock(&zs->mutex);
       }
     } else {
-      // nič neprišlo, krátky spánok aby CPU nelietalo na 100 %
       struct timespec ts;
       ts.tv_sec = 0;
-      ts.tv_nsec = 5 * 1000000L; // 5 ms
+      ts.tv_nsec = 5 * 1000000L;
       nanosleep(&ts, NULL);
     }
   }
@@ -117,111 +119,181 @@ static void *uart_thread(void *arg) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Font s podporou slovenčiny + viacriadkový text
+// Font s podporou slovenčiny
 // ─────────────────────────────────────────────────────────────
 
-// Načítanie fontu s ASCII + slovenské diakritiky
 static Font LoadSlovakFont(const char *path, int fontSize) {
-  int codepoints[256];
+  int codepoints[300];
   int count = 0;
 
-  // Základný ASCII rozsah
-  for (int c = 32; c <= 126; c++) {
+  for (int c = 32; c <= 126; c++)
     codepoints[count++] = c;
-  }
 
-  // Slovenské znaky (malé + veľké)
   int extra[] = {
-      0x010D, // č
-      0x010C, // Č
-      0x0161, // š
-      0x0160, // Š
-      0x017E, // ž
-      0x017D, // Ž
-      0x013E, // ľ
-      0x013D, // Ľ
-      0x0165, // ť
-      0x0164, // Ť
-      0x0148, // ň
-      0x0147, // Ň
-      0x00E1, // á
-      0x00C1, // Á
-      0x00E9, // é
-      0x00C9, // É
-      0x00ED, // í
-      0x00CD, // Í
-      0x00F3, // ó
-      0x00D3, // Ó
-      0x00FA, // ú
-      0x00DA, // Ú
-      0x00FD, // ý
-      0x00DD, // Ý
+      0x010D, 0x010C, // č Č
+      0x0161, 0x0160, // š Š
+      0x017E, 0x017D, // ž Ž
+      0x013E, 0x013D, // ľ Ľ
+      0x0165, 0x0164, // ť Ť
+      0x0148, 0x0147, // ň Ň
+      0x010F, 0x010E, // ď Ď
+      0x0155, 0x0154, // ŕ Ŕ
+      0x013A, 0x0139, // ĺ Ĺ
+      0x00E1, 0x00C1, // á Á
+      0x00E9, 0x00C9, // é É
+      0x00ED, 0x00CD, // í Í
+      0x00F3, 0x00D3, // ó Ó
+      0x00FA, 0x00DA, // ú Ú
+      0x00FD, 0x00DD, // ý Ý
+      0x00F4, 0x00D4, // ô Ô
+      0x00E4, 0x00C4, // ä Ä
+      0x2013,         // –
+      0x2014,         // —
+      0x201E,         // „
+      0x201C,         // "
+      0x00AB,         // «
+      0x00BB,         // »
   };
+
   int extraCount = sizeof(extra) / sizeof(extra[0]);
   for (int i = 0; i < extraCount &&
                   count < (int)(sizeof(codepoints) / sizeof(codepoints[0]));
-       i++) {
+       i++)
     codepoints[count++] = extra[i];
-  }
 
   Font f = LoadFontEx(path, fontSize, codepoints, count);
   if (f.texture.id == 0) {
-    // fallback – ak by sa font nenačítal
+    fprintf(stderr, "[Font] Nepodarilo sa načítať '%s', používam default\n",
+            path);
     return GetFontDefault();
   }
+
+  SetTextureFilter(f.texture, TEXTURE_FILTER_BILINEAR);
+  printf("[Font] Načítaný: %s (%d glyfov)\n", path, count);
   return f;
 }
 
-// Nakreslí text s viacerými riadkami (oddelenými \n), centrovaný na obrazovke
+// ─────────────────────────────────────────────────────────────
+// Auto-veľkosť textu – binárne hľadanie optimálnej fontSize
+// ─────────────────────────────────────────────────────────────
+
+// Rozdelí text na riadky podľa \n (bez modifikácie pôvodného reťazca)
+static int split_lines(const char *text, const char *lines_start[],
+                       int lines_len[], int max_lines) {
+  int count = 0;
+  const char *p = text;
+
+  while (*p && count < max_lines) {
+    lines_start[count] = p;
+    const char *nl = strchr(p, '\n');
+    if (nl) {
+      lines_len[count] = (int)(nl - p);
+      p = nl + 1;
+    } else {
+      lines_len[count] = (int)strlen(p);
+      p += lines_len[count];
+    }
+    count++;
+  }
+
+  return count;
+}
+
+// Zmeria maximálnu šírku a celkovú výšku textového bloku pri danej fontSize
+static void measure_text_block(Font font, const char *lines_start[],
+                               const int lines_len[], int line_count,
+                               float fontSize, float *out_max_width,
+                               float *out_total_height) {
+  float spacing = fontSize * LINE_SPACING;
+  float lineHeight = fontSize + spacing;
+  float maxW = 0.0f;
+
+  char tmp[MAX_TEXT_LEN];
+
+  for (int i = 0; i < line_count; i++) {
+    int len = lines_len[i];
+    if (len >= (int)sizeof(tmp))
+      len = (int)sizeof(tmp) - 1;
+    memcpy(tmp, lines_start[i], len);
+    tmp[len] = '\0';
+
+    Vector2 sz = MeasureTextEx(font, tmp, fontSize, 0);
+    if (sz.x > maxW)
+      maxW = sz.x;
+  }
+
+  *out_max_width = maxW;
+  *out_total_height = line_count * lineHeight - spacing;
+}
+
+// Binárne hľadanie najväčšej fontSize, pri ktorej sa text zmestí na obrazovku
+static float find_optimal_font_size(Font font, const char *text, int screenW,
+                                    int screenH) {
+  const char *lines_start[512];
+  int lines_len[512];
+  int line_count = split_lines(text, lines_start, lines_len, 512);
+
+  if (line_count == 0)
+    return (float)FONT_SIZE_MIN;
+
+  float maxW = (float)(screenW - 2 * SCREEN_PADDING);
+  float maxH = (float)(screenH - 2 * SCREEN_PADDING);
+
+  int lo = FONT_SIZE_MIN;
+  int hi = FONT_SIZE_MAX;
+  int best = FONT_SIZE_MIN;
+
+  while (lo <= hi) {
+    int mid = (lo + hi) / 2;
+    float w, h;
+    measure_text_block(font, lines_start, lines_len, line_count, (float)mid, &w,
+                       &h);
+
+    if (w <= maxW && h <= maxH) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+
+  return (float)best;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Viacriadkový text centrovaný na obrazovke
+// ─────────────────────────────────────────────────────────────
+
 static void DrawCenteredMultilineText(Font font, const char *text,
                                       int screenWidth, int screenHeight,
-                                      float fontSize, float lineSpacing,
-                                      Color color) {
+                                      float fontSize, Color color) {
   if (!text || !text[0])
     return;
 
-  // Spočítaj riadky
-  int lineCount = 1;
-  for (const char *p = text; *p; p++) {
-    if (*p == '\n')
-      lineCount++;
-  }
+  float spacing = fontSize * LINE_SPACING;
+  float lineHeight = fontSize + spacing;
 
-  float lineHeight = fontSize + lineSpacing;
-  float totalHeight = lineCount * lineHeight - lineSpacing;
-  float startY = (screenHeight - totalHeight) / 2.0f;
+  const char *lines_start[512];
+  int lines_len[512];
+  int line_count = split_lines(text, lines_start, lines_len, 512);
 
-  char lineBuf[MAX_TEXT_LEN];
-  int lineIdx = 0;
-  float y = startY;
+  float totalHeight = line_count * lineHeight - spacing;
+  float y = (screenHeight - totalHeight) / 2.0f;
 
-  const char *p = text;
-  while (*p) {
-    if (*p == '\n') {
-      lineBuf[lineIdx] = '\0';
+  char tmp[MAX_TEXT_LEN];
 
-      Vector2 size = MeasureTextEx(font, lineBuf, fontSize, 0);
-      float x = (screenWidth - size.x) / 2.0f;
+  for (int i = 0; i < line_count; i++) {
+    int len = lines_len[i];
+    if (len >= (int)sizeof(tmp))
+      len = (int)sizeof(tmp) - 1;
+    memcpy(tmp, lines_start[i], len);
+    tmp[len] = '\0';
 
-      DrawTextEx(font, lineBuf, (Vector2){x, y}, fontSize, 0, color);
+    Vector2 sz = MeasureTextEx(font, tmp, fontSize, 0);
+    float x = (screenWidth - sz.x) / 2.0f;
 
-      y += lineHeight;
-      lineIdx = 0;
-      p++;
-      continue;
-    }
-
-    if (lineIdx < (int)sizeof(lineBuf) - 1) {
-      lineBuf[lineIdx++] = *p;
-    }
-    p++;
-  }
-
-  if (lineIdx > 0) {
-    lineBuf[lineIdx] = '\0';
-    Vector2 size = MeasureTextEx(font, lineBuf, fontSize, 0);
-    float x = (screenWidth - size.x) / 2.0f;
-    DrawTextEx(font, lineBuf, (Vector2){x, y}, fontSize, 0, color);
+    DrawTextEx(font, tmp, (Vector2){x, y}, fontSize, 0, color);
+    y += lineHeight;
   }
 }
 
@@ -230,7 +302,6 @@ static void DrawCenteredMultilineText(Font font, const char *text,
 // ─────────────────────────────────────────────────────────────
 
 void premietac_run_raylib(int uart_fd, const char *background_path) {
-  // ZDIELANÝ STAV NA HEAPE (dynamicky), nie na zásobníku
   ZdielanyStav *zs = malloc(sizeof(ZdielanyStav));
   if (!zs) {
     fprintf(stderr, "[Premietac] malloc(ZdielanyStav) zlyhal\n");
@@ -246,7 +317,6 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
   zs->uart_fd = uart_fd;
   zs->stop = 0;
 
-  // Spusti UART vlákno
   pthread_t tid;
   if (pthread_create(&tid, NULL, uart_thread, zs) != 0) {
     fprintf(stderr, "[Premietac] Nepodarilo sa vytvoriť UART vlákno\n");
@@ -255,7 +325,6 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
     return;
   }
 
-  // Raylib okno (hlavné vlákno)
   SetConfigFlags(FLAG_WINDOW_UNDECORATED);
   InitWindow(800, 600, "Premietac");
 
@@ -274,24 +343,22 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
 
   printf("[Premietac] Rozlisenie: %d x %d\n", screenWidth, screenHeight);
 
-  // Font so slovenskými znakmi – súbor daj vedľa binárky (napr. DejaVuSans.ttf)
-  int fontSize = 48;
-  Font uiFont = LoadSlovakFont("../NotoSans-Regular.ttf", fontSize);
+  // Načítaj Bold font na FONT_SIZE_MAX – Raylib škáluje dole, ostré hrany
+  Font uiFont = LoadSlovakFont("../NotoSans-Bold.ttf", FONT_SIZE_MAX);
 
   Texture2D background = LoadTexture(background_path);
-  if (background.id == 0) {
+  if (background.id == 0)
     printf("[Premietac] CHYBA: Nepodarilo sa nacitat obrazok '%s'\n",
            background_path);
-  } else {
+  else
     printf("[Premietac] OK: nacitane pozadie %s (%d x %d)\n", background_path,
            background.width, background.height);
-  }
 
-  // Buffer na text, aby sme nekreslili priamo pointer do zdieľaného stavu
   char txt_buf[MAX_TEXT_LEN];
+  char last_txt[MAX_TEXT_LEN] = "";
+  float cached_fontSize = (float)FONT_SIZE_MIN;
 
   while (!WindowShouldClose()) {
-    // Lokálna kópia základných hodnôt stavu + text v bufri
     int bezi;
     int blackscreen;
     int32_t cislo_piesne;
@@ -299,9 +366,7 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
 
     txt_buf[0] = '\0';
 
-    // Čítanie stavu pod mutexom – čo najkratšie
     pthread_mutex_lock(&zs->mutex);
-
     bezi = zs->stav.bezi;
     blackscreen = zs->stav.blackscreen;
     cislo_piesne = zs->stav.cislo_piesne;
@@ -309,28 +374,34 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
 
     if (bezi && !blackscreen) {
       Sloha *sloha = stav_get_sloha(&zs->stav, cislo_piesne, cislo_slohy);
-      if (sloha) {
+      if (sloha)
         snprintf(txt_buf, sizeof(txt_buf), "%s", sloha->text);
-      }
     }
-
     pthread_mutex_unlock(&zs->mutex);
 
-    // DEBUG: vypíš stav každých pár frame-ov
+    // Prepočítaj fontSize len keď sa text zmenil (nie každý frame)
+    if (strcmp(txt_buf, last_txt) != 0) {
+      strncpy(last_txt, txt_buf, sizeof(last_txt) - 1);
+      last_txt[sizeof(last_txt) - 1] = '\0';
+
+      if (txt_buf[0] != '\0')
+        cached_fontSize =
+            find_optimal_font_size(uiFont, txt_buf, screenWidth, screenHeight);
+    }
+
     static int frameCounter = 0;
     frameCounter++;
     if (frameCounter % 60 == 0) {
-      printf(
-          "[RENDER] bezi=%d blackscreen=%d piesen=%d sloha=%d txt_empty=%d\n",
-          bezi, blackscreen, cislo_piesne, cislo_slohy, (txt_buf[0] == '\0'));
+      printf("[RENDER] bezi=%d blackscreen=%d piesen=%d sloha=%d txt_empty=%d "
+             "fontSize=%.0f\n",
+             bezi, blackscreen, cislo_piesne, cislo_slohy, (txt_buf[0] == '\0'),
+             cached_fontSize);
     }
 
-    // Render
     BeginDrawing();
     ClearBackground(BLACK);
 
     if (!bezi) {
-      // Pozadie
       if (background.id != 0) {
         Rectangle src, dest;
         compute_fullscreen_dest(background.width, background.height,
@@ -338,20 +409,15 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
         DrawTexturePro(background, src, dest, (Vector2){0, 0}, 0.0f, WHITE);
       }
     } else {
-      // Prezentácia
       if (!blackscreen && txt_buf[0] != '\0') {
         DrawCenteredMultilineText(uiFont, txt_buf, screenWidth, screenHeight,
-                                  (float)fontSize,
-                                  8.0f, // medzera medzi riadkami
-                                  WHITE);
+                                  cached_fontSize, WHITE);
       }
-      // blackscreen == 1 => len čierna obrazovka
     }
 
     EndDrawing();
   }
 
-  // Upratanie
   zs->stop = 1;
   pthread_join(tid, NULL);
   pthread_mutex_destroy(&zs->mutex);
@@ -389,11 +455,10 @@ void testing_ray(const char *background_path) {
   SetTargetFPS(60);
 
   Texture2D texture = LoadTexture(background_path);
-  if (texture.id == 0) {
+  if (texture.id == 0)
     printf("[Testing] CHYBA: Nepodarilo sa nacitat '%s'\n", background_path);
-  } else {
+  else
     printf("[Testing] OK: %dx%d\n", texture.width, texture.height);
-  }
 
   while (!WindowShouldClose()) {
     BeginDrawing();
