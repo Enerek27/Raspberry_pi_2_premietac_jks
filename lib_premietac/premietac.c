@@ -1,343 +1,297 @@
-// protokol.c
+// premietac.c
+#include "premietac.h"
 #include "protokol.h"
+#include "uart.h"
 
+#include "raylib.h"
+
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h> // nanosleep
 
-/* ═══════════════════════════════════════════════════════════════════════
- *  PARSOVANIE
- * ═══════════════════════════════════════════════════════════════════════ */
+// ─────────────────────────────────────────────────────────────
+// Pomocné výpočty a typy
+// ─────────────────────────────────────────────────────────────
 
-int protokol_parsuj(const char *sprava, ParseovanyPrikaz *out) {
-  if (!sprava || !out)
-    return 0;
-  memset(out, 0, sizeof(*out));
+// Pomocný výpočet obdĺžnika na fullscreen obrázok so zachovaním pomeru strán
+static void compute_fullscreen_dest(int texW, int texH, int screenW,
+                                    int screenH, Rectangle *src,
+                                    Rectangle *dest) {
+  float texAspect = (float)texW / (float)texH;
+  float screenAspect = (float)screenW / (float)screenH;
 
-  /* ── %$X$Y$% príkazy ── */
-  if (sprava[0] == '%' && sprava[1] == '$') {
-    int typ_id, param;
-    if (sscanf(sprava, "%%$%d$%d$%%", &typ_id, &param) == 2) {
-      out->param1 = param;
-      switch (typ_id) {
-      case 1:
-        out->typ = PRIKAZ_SPUSTI;
-        return 1;
-      case 2:
-        out->typ = PRIKAZ_VYPNI;
-        return 1;
-      case 3:
-        out->typ = PRIKAZ_POSLI_PIESEN;
-        out->param1 = param;
-        return 1;
-      case 4:
-        out->typ = PRIKAZ_ZATMAV;
-        return 1;
-      case 5:
-        out->typ = PRIKAZ_ODTMAV;
-        return 1;
-      default:
-        return 0;
+  if (texAspect > screenAspect) {
+    // obraz je širší -> prispôsob výšku
+    float scale = (float)screenH / (float)texH;
+    float newW = texW * scale;
+    dest->width = newW;
+    dest->height = (float)screenH;
+    dest->x = (screenW - newW) / 2.0f;
+    dest->y = 0.0f;
+  } else {
+    // obraz je vyšší -> prispôsob šírku
+    float scale = (float)screenW / (float)texW;
+    float newH = texH * scale;
+    dest->width = (float)screenW;
+    dest->height = newH;
+    dest->x = 0.0f;
+    dest->y = (screenH - newH) / 2.0f;
+  }
+
+  src->x = 0.0f;
+  src->y = 0.0f;
+  src->width = (float)texW;
+  src->height = (float)texH;
+}
+
+// Zdieľaný stav medzi UART vláknom a render vláknom
+typedef struct {
+  StavPremietania stav;
+  pthread_mutex_t mutex;
+  int uart_fd;
+  int stop; // 1 = ukonči UART vlákno
+} ZdielanyStav;
+
+// ─────────────────────────────────────────────────────────────
+// UART vlákno – číta sériovku a aplikuje príkazy na stav
+// ─────────────────────────────────────────────────────────────
+
+static void *uart_thread(void *arg) {
+  ZdielanyStav *zs = (ZdielanyStav *)arg;
+
+  char line[UART_BUF_SIZE];
+  char reasm_buf[REASM_BUF_SIZE];
+  int reasm_len = 0;
+  reasm_buf[0] = '\0';
+
+  ParseovanyPrikaz prikaz;
+
+  printf("[UART vlákno] Štartujem, fd=%d\n", zs->uart_fd);
+
+  while (!zs->stop) {
+    int len = uart_read_line_nonblock(zs->uart_fd, line, sizeof(line));
+
+    if (len < 0) {
+      fprintf(stderr, "[UART vlákno] Chyba čítania (len=%d), končím\n", len);
+      break;
+    }
+
+    if (len > 0) {
+      // odstráň koncový \n/\r pre krajší výpis
+      if (line[len - 1] == '\n' || line[len - 1] == '\r') {
+        line[len - 1] = '\0';
       }
-    }
-  }
 
-  /* ── %|piesen|sloha|% ── */
-  if (sprava[0] == '%' && sprava[1] == '|') {
-    int piesen, sloha;
-    if (sscanf(sprava, "%%|%d|%d|%%", &piesen, &sloha) == 2) {
-      out->typ = PRIKAZ_PREPNI_NA;
-      out->param1 = piesen;
-      out->param2 = sloha;
-      return 1;
-    }
-  }
+      printf("[UART] chunk(len=%d): \"%s\"\n", len, line);
 
-  /* ── $$cislo$$text%%% ── */
-  if (strncmp(sprava, "$$", 2) == 0) {
-    const char *p = sprava + 2;
-    char *end_num;
-    long cislo = strtol(p, &end_num, 10);
-    if (end_num != p && strncmp(end_num, "$$", 2) == 0) {
-      const char *text_start = end_num + 2;
-      size_t tlen = strlen(text_start);
-      if (tlen >= 3 && strcmp(text_start + tlen - 3, "%%%") == 0)
-        tlen -= 3;
-      out->typ = PRIKAZ_DATA_STROFY;
-      out->param1 = (int32_t)cislo;
-      snprintf(out->text, MAX_TEXT_LEN, "%.*s", (int)tlen, text_start);
-      return 1;
-    }
-  }
+      int kompletne = reasm_pridaj_chunk(reasm_buf, &reasm_len, line, &prikaz);
+      printf("[UART] reasm_len=%d, kompletne=%d\n", reasm_len, kompletne);
 
-  return 0;
-}
+      if (kompletne) {
+        printf("[UART] >>> PARSOVANY PRIKAZ: typ=%s param1=%d param2=%d "
+               "text_len=%zu\n",
+               typ_prikazu_str(prikaz.typ), prikaz.param1, prikaz.param2,
+               strlen(prikaz.text));
 
-/* ═══════════════════════════════════════════════════════════════════════
- *  REASSEMBLY – robustná verzia, hľadá správy v streame
- * ═══════════════════════════════════════════════════════════════════════ */
-
-int reasm_pridaj_chunk(char *buf, int *buf_len, const char *chunk,
-                       ParseovanyPrikaz *out) {
-  int chunk_len = (int)strlen(chunk);
-
-  if (chunk_len <= 0)
-    return 0;
-
-  if (*buf_len + chunk_len >= REASM_BUF_SIZE - 1) {
-    fprintf(stderr, "[reasm] Buffer pretiekol, resetujem\n");
-    *buf_len = 0;
-    buf[0] = '\0';
-    return 0;
-  }
-
-  /* Prilep chunk na koniec buffra */
-  memcpy(buf + *buf_len, chunk, chunk_len);
-  *buf_len += chunk_len;
-  buf[*buf_len] = '\0';
-
-  for (;;) {
-    if (*buf_len == 0)
-      return 0;
-
-    /* 1) Odrež bordel pred začiatkom správy */
-    int start = 0;
-    while (start < *buf_len) {
-      if (buf[start] == '%')
-        break;
-      if (buf[start] == '$' && start + 1 < *buf_len && buf[start + 1] == '$')
-        break;
-      start++;
-    }
-
-    if (start > 0) {
-      memmove(buf, buf + start, *buf_len - start);
-      *buf_len -= start;
-      buf[*buf_len] = '\0';
-    }
-
-    if (*buf_len < 2)
-      return 0;
-
-    /* 2) Podľa prefixu hľadaj koniec správy */
-    if (buf[0] == '%' && buf[1] == '$') {
-      char *end = strstr(buf, "$%");
-      if (!end)
-        return 0;
-
-      int msg_len = (int)(end - buf) + 2;
-      char msg[REASM_BUF_SIZE];
-      if (msg_len >= (int)sizeof(msg))
-        msg_len = (int)sizeof(msg) - 1;
-      memcpy(msg, buf, msg_len);
-      msg[msg_len] = '\0';
-
-      int remaining = *buf_len - msg_len;
-      memmove(buf, buf + msg_len, remaining);
-      *buf_len = remaining;
-      buf[*buf_len] = '\0';
-
-      return protokol_parsuj(msg, out);
-
-    } else if (buf[0] == '%' && buf[1] == '|') {
-      char *end = strstr(buf, "|%");
-      if (!end)
-        return 0;
-
-      int msg_len = (int)(end - buf) + 2;
-      char msg[REASM_BUF_SIZE];
-      if (msg_len >= (int)sizeof(msg))
-        msg_len = (int)sizeof(msg) - 1;
-      memcpy(msg, buf, msg_len);
-      msg[msg_len] = '\0';
-
-      int remaining = *buf_len - msg_len;
-      memmove(buf, buf + msg_len, remaining);
-      *buf_len = remaining;
-      buf[*buf_len] = '\0';
-
-      return protokol_parsuj(msg, out);
-
-    } else if (buf[0] == '$' && buf[1] == '$') {
-      char *end = strstr(buf, "%%%");
-      if (!end)
-        return 0;
-
-      int msg_len = (int)(end - buf) + 3;
-      char msg[REASM_BUF_SIZE];
-      if (msg_len >= (int)sizeof(msg))
-        msg_len = (int)sizeof(msg) - 1;
-      memcpy(msg, buf, msg_len);
-      msg[msg_len] = '\0';
-
-      int remaining = *buf_len - msg_len;
-      memmove(buf, buf + msg_len, remaining);
-      *buf_len = remaining;
-      buf[*buf_len] = '\0';
-
-      return protokol_parsuj(msg, out);
-
+        pthread_mutex_lock(&zs->mutex);
+        stav_aplikuj(&zs->stav, &prikaz);
+        printf("[UART] Stav po aplikovani: bezi=%d, blackscreen=%d, piesen=%d, "
+               "sloha=%d\n",
+               zs->stav.bezi, zs->stav.blackscreen, zs->stav.cislo_piesne,
+               zs->stav.cislo_slohy);
+        pthread_mutex_unlock(&zs->mutex);
+      }
     } else {
-      /* Neznámy prefix – zahodíme prvý znak a opakujeme */
-      memmove(buf, buf + 1, *buf_len - 1);
-      (*buf_len)--;
-      buf[*buf_len] = '\0';
-      continue;
+      // nič neprišlo, krátky spánok aby CPU nelietalo na 100 %
+      struct timespec ts;
+      ts.tv_sec = 0;
+      ts.tv_nsec = 5 * 1000000L; // 5 ms
+      nanosleep(&ts, NULL);
     }
   }
 
-  return 0;
-}
-
-/* ═══════════════════════════════════════════════════════════════════════
- *  POMOCNÁ FUNKCIA – odstráni úvodné čísla z textu slohy
- *  Príklady:
- *    "1 Spievajme..." → "Spievajme..."
- *    "12. Niečo"      → "Niečo"
- *    "2 - Text"       → "Text"
- * ═══════════════════════════════════════════════════════════════════════ */
-
-static const char *strip_leading_numbers(const char *s) {
-  while (*s >= '0' && *s <= '9')
-    s++;
-  while (*s == ' ' || *s == '\t' || *s == '.' || *s == '-' || *s == ':')
-    s++;
-  return s;
-}
-
-/* ═══════════════════════════════════════════════════════════════════════
- *  STAV
- * ═══════════════════════════════════════════════════════════════════════ */
-
-void stav_init(StavPremietania *s) {
-  memset(s, 0, sizeof(*s));
-  s->cakajuca_piesen_id = -1;
-}
-
-Piesen *stav_get_piesen(StavPremietania *s, int32_t piesen_idx) {
-  if (piesen_idx < 0 || piesen_idx >= s->db.pocet)
-    return NULL;
-  return &s->db.piesne[piesen_idx];
-}
-
-Sloha *stav_get_sloha(StavPremietania *s, int32_t piesen_idx,
-                      int32_t sloha_cislo) {
-  Piesen *p = stav_get_piesen(s, piesen_idx);
-  if (!p)
-    return NULL;
-  for (int i = 0; i < p->pocet_sloh; i++) {
-    if (p->slohy[i].cislo == sloha_cislo)
-      return &p->slohy[i];
-  }
+  printf("[UART vlákno] Koniec\n");
   return NULL;
 }
 
-static Piesen *db_najdi_alebo_vytvor(DatabazaPiesni *db, int32_t id) {
-  for (int i = 0; i < db->pocet; i++) {
-    if (db->piesne[i].id == id)
-      return &db->piesne[i];
+// ─────────────────────────────────────────────────────────────
+// Premietanie – hlavná funkcia s Raylib loopom
+// ─────────────────────────────────────────────────────────────
+
+void premietac_run_raylib(int uart_fd, const char *background_path) {
+  // ZDIELANÝ STAV NA HEAPE (dynamicky), nie na zásobníku
+  ZdielanyStav *zs = malloc(sizeof(ZdielanyStav));
+  if (!zs) {
+    fprintf(stderr, "[Premietac] malloc(ZdielanyStav) zlyhal\n");
+    return;
   }
-  if (db->pocet >= MAX_PIESNI) {
-    fprintf(stderr, "[DB] Plná databáza piesní!\n");
-    return NULL;
+
+  stav_init(&zs->stav);
+  if (pthread_mutex_init(&zs->mutex, NULL) != 0) {
+    fprintf(stderr, "[Premietac] pthread_mutex_init zlyhal\n");
+    free(zs);
+    return;
   }
-  Piesen *p = &db->piesne[db->pocet++];
-  memset(p, 0, sizeof(*p));
-  p->id = id;
-  return p;
+  zs->uart_fd = uart_fd;
+  zs->stop = 0;
+
+  // Spusti UART vlákno
+  pthread_t tid;
+  if (pthread_create(&tid, NULL, uart_thread, zs) != 0) {
+    fprintf(stderr, "[Premietac] Nepodarilo sa vytvoriť UART vlákno\n");
+    pthread_mutex_destroy(&zs->mutex);
+    free(zs);
+    return;
+  }
+
+  // Raylib okno (hlavné vlákno)
+  SetConfigFlags(FLAG_WINDOW_UNDECORATED);
+  InitWindow(800, 600, "Premietac");
+
+  int monitor = GetCurrentMonitor();
+  int screenWidth = GetMonitorWidth(monitor);
+  int screenHeight = GetMonitorHeight(monitor);
+
+  if (screenWidth == 0 || screenHeight == 0) {
+    screenWidth = GetScreenWidth();
+    screenHeight = GetScreenHeight();
+  }
+
+  SetWindowSize(screenWidth, screenHeight);
+  SetWindowPosition(0, 0);
+  SetTargetFPS(60);
+
+  printf("[Premietac] Rozlisenie: %d x %d\n", screenWidth, screenHeight);
+
+  Texture2D background = LoadTexture(background_path);
+  if (background.id == 0) {
+    printf("[Premietac] CHYBA: Nepodarilo sa nacitat obrazok '%s'\n",
+           background_path);
+  } else {
+    printf("[Premietac] OK: nacitane pozadie %s (%d x %d)\n", background_path,
+           background.width, background.height);
+  }
+
+  int fontSize = 48;
+
+  // Buffer na text, aby sme nekreslili priamo pointer do zdieľaného stavu
+  char txt_buf[MAX_TEXT_LEN];
+
+  while (!WindowShouldClose()) {
+    // Lokálna kópia základných hodnôt stavu + text v bufri
+    int bezi;
+    int blackscreen;
+    int32_t cislo_piesne;
+    int32_t cislo_slohy;
+
+    txt_buf[0] = '\0';
+
+    // Čítanie stavu pod mutexom – čo najkratšie
+    pthread_mutex_lock(&zs->mutex);
+
+    bezi = zs->stav.bezi;
+    blackscreen = zs->stav.blackscreen;
+    cislo_piesne = zs->stav.cislo_piesne;
+    cislo_slohy = zs->stav.cislo_slohy;
+
+    if (bezi && !blackscreen) {
+      Sloha *sloha = stav_get_sloha(&zs->stav, cislo_piesne, cislo_slohy);
+      if (sloha) {
+        snprintf(txt_buf, sizeof(txt_buf), "%s", sloha->text);
+      }
+    }
+
+    pthread_mutex_unlock(&zs->mutex);
+
+    // DEBUG: vypíš stav každých pár frame-ov
+    static int frameCounter = 0;
+    frameCounter++;
+    if (frameCounter % 60 == 0) { // cca raz za sekundu pri 60 FPS
+      printf(
+          "[RENDER] bezi=%d blackscreen=%d piesen=%d sloha=%d txt_empty=%d\n",
+          bezi, blackscreen, cislo_piesne, cislo_slohy, (txt_buf[0] == '\0'));
+    }
+
+    // Render
+    BeginDrawing();
+    ClearBackground(BLACK);
+
+    if (!bezi) {
+      // Pozadie
+      if (background.id != 0) {
+        Rectangle src, dest;
+        compute_fullscreen_dest(background.width, background.height,
+                                screenWidth, screenHeight, &src, &dest);
+        DrawTexturePro(background, src, dest, (Vector2){0, 0}, 0.0f, WHITE);
+      }
+    } else {
+      // Prezentácia
+      if (!blackscreen && txt_buf[0] != '\0') {
+        int textWidth = MeasureText(txt_buf, fontSize);
+        int x = (screenWidth - textWidth) / 2;
+        int y = (screenHeight - fontSize) / 2;
+        DrawText(txt_buf, x, y, fontSize, WHITE);
+      }
+      // blackscreen == 1 => len čierna obrazovka
+    }
+
+    EndDrawing();
+  }
+
+  // Upratanie
+  zs->stop = 1;
+  pthread_join(tid, NULL);
+  pthread_mutex_destroy(&zs->mutex);
+
+  if (background.id != 0)
+    UnloadTexture(background);
+  CloseWindow();
+  free(zs);
 }
 
-void stav_aplikuj(StavPremietania *s, const ParseovanyPrikaz *p) {
-  switch (p->typ) {
+// ─────────────────────────────────────────────────────────────
+// Jednoduchý test bez UART – len fullscreen obrázok
+// ─────────────────────────────────────────────────────────────
 
-  case PRIKAZ_SPUSTI:
-    s->bezi = 1;
-    s->blackscreen = 0;
-    printf("[Stav] Premietanie SPUSTENÉ\n");
-    break;
+void testing_ray(const char *background_path) {
+  SetConfigFlags(FLAG_WINDOW_UNDECORATED);
+  InitWindow(800, 600, "Testing");
 
-  case PRIKAZ_VYPNI:
-    printf("[Stav] Premietanie ZASTAVENÉ, reset databázy\n");
-    stav_init(s);
-    break;
+  int monitor = GetCurrentMonitor();
+  int w = GetMonitorWidth(monitor);
+  int h = GetMonitorHeight(monitor);
 
-  case PRIKAZ_POSLI_PIESEN:
-    s->cakajuca_piesen_id = p->param1;
-    db_najdi_alebo_vytvor(&s->db, p->param1);
-    printf("[Stav] Príjem piesne id=%d\n", p->param1);
-    break;
+  if (w == 0 || h == 0) {
+    w = GetScreenWidth();
+    h = GetScreenHeight();
+  }
 
-  case PRIKAZ_DATA_STROFY: {
-    if (s->cakajuca_piesen_id < 0) {
-      fprintf(stderr, "[Stav] Strofa bez hlavičky piesne, ignorujem\n");
-      break;
+  SetWindowSize(w, h);
+  SetWindowPosition(0, 0);
+  SetTargetFPS(60);
+
+  Texture2D texture = LoadTexture(background_path);
+  if (texture.id == 0) {
+    printf("[Testing] CHYBA: Nepodarilo sa nacitat '%s'\n", background_path);
+  } else {
+    printf("[Testing] OK: %dx%d\n", texture.width, texture.height);
+  }
+
+  while (!WindowShouldClose()) {
+    BeginDrawing();
+    ClearBackground(BLACK);
+
+    if (texture.id != 0) {
+      Rectangle src, dest;
+      compute_fullscreen_dest(texture.width, texture.height, w, h, &src, &dest);
+      DrawTexturePro(texture, src, dest, (Vector2){0, 0}, 0.0f, WHITE);
     }
-    Piesen *piesen = db_najdi_alebo_vytvor(&s->db, s->cakajuca_piesen_id);
-    if (!piesen)
-      break;
-    if (piesen->pocet_sloh >= MAX_SLOH) {
-      fprintf(stderr, "[Stav] Pieseň %d má príliš veľa slôh\n", piesen->id);
-      break;
-    }
-    Sloha *sloha = &piesen->slohy[piesen->pocet_sloh++];
-    sloha->cislo = p->param1;
 
-    /* Uloží text BEZ úvodných čísel */
-    const char *clean = strip_leading_numbers(p->text);
-    snprintf(sloha->text, MAX_TEXT_LEN, "%s", clean);
-
-    printf("[Stav] Uložená strofa %d piesne %d: %.40s%s\n", p->param1,
-           piesen->id, sloha->text, strlen(sloha->text) > 40 ? "..." : "");
-    break;
+    EndDrawing();
   }
 
-  case PRIKAZ_ZATMAV:
-    s->blackscreen = 1;
-    printf("[Stav] ZATMAVENÉ\n");
-    break;
-
-  case PRIKAZ_ODTMAV:
-    s->blackscreen = 0;
-    printf("[Stav] ODTMAVENÉ\n");
-    break;
-
-  case PRIKAZ_PREPNI_NA: {
-    int32_t piesen_idx = p->param1;
-    int32_t sloha_cislo = p->param2;
-    s->cislo_piesne = piesen_idx;
-    s->cislo_slohy = sloha_cislo;
-
-    Sloha *sloha = stav_get_sloha(s, piesen_idx, sloha_cislo);
-    printf("[Stav] Prepnuté na pieseň[%d] sloha %d\n", piesen_idx, sloha_cislo);
-    if (sloha)
-      printf("[Zobraz] %s\n", sloha->text);
-    else
-      printf("[Zobraz] (sloha nenájdená)\n");
-    break;
-  }
-
-  default:
-    break;
-  }
-}
-
-const char *typ_prikazu_str(TypPrikazu t) {
-  switch (t) {
-  case PRIKAZ_SPUSTI:
-    return "SPUSTI";
-  case PRIKAZ_VYPNI:
-    return "VYPNI";
-  case PRIKAZ_POSLI_PIESEN:
-    return "POSLI_PIESEN";
-  case PRIKAZ_ZATMAV:
-    return "ZATMAV";
-  case PRIKAZ_ODTMAV:
-    return "ODTMAV";
-  case PRIKAZ_PREPNI_NA:
-    return "PREPNI_NA";
-  case PRIKAZ_DATA_STROFY:
-    return "DATA_STROFY";
-  default:
-    return "NEZNÁMY";
-  }
+  UnloadTexture(texture);
+  CloseWindow();
 }
