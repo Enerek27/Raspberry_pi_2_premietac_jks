@@ -1,28 +1,27 @@
 // premietac.c
 #include "premietac.h"
 #include "protokol.h"
+#include "raylib.h"
 #include "uart.h"
 
-#include "raylib.h"
-
 #include <pthread.h>
+#include <stdatomic.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
-
-// ─────────────────────────────────────────────────────────────
-// Konštanty
-// ─────────────────────────────────────────────────────────────
 
 #define FONT_SIZE_MIN 20
-#define FONT_SIZE_MAX 100
-#define SCREEN_PADDING 60
-#define LINE_SPACING 0.15f
+#define FONT_SIZE_MAX 200
 
-// ─────────────────────────────────────────────────────────────
-// Pomocné výpočty (fullscreen obrázok)
-// ─────────────────────────────────────────────────────────────
+typedef struct {
+  char **riadky; // pole reťazcov
+  int pocet;
+  float font_size;
+  float line_h;
+  float start_y;
+  bool platna; // či je cache aktuálna
+} RenderCache;
 
 static void compute_fullscreen_dest(int texW, int texH, int screenW,
                                     int screenH, Rectangle *src,
@@ -51,71 +50,6 @@ static void compute_fullscreen_dest(int texW, int texH, int screenW,
   src->width = (float)texW;
   src->height = (float)texH;
 }
-
-// ─────────────────────────────────────────────────────────────
-// Zdieľaný stav
-// ─────────────────────────────────────────────────────────────
-
-typedef struct {
-  StavPremietania stav;
-  pthread_mutex_t mutex;
-  int uart_fd;
-  int stop;
-} ZdielanyStav;
-
-// ─────────────────────────────────────────────────────────────
-// UART vlákno – 1 chunk = 1 „riadok“ (cez uart_read_line_nonblock)
-// reasm_pridaj_chunk si už skladá stream vo svojom buffri
-// ─────────────────────────────────────────────────────────────
-
-static void *uart_thread(void *arg) {
-  ZdielanyStav *zs = (ZdielanyStav *)arg;
-
-  char line[UART_BUF_SIZE];
-  char reasm_buf[REASM_BUF_SIZE];
-  int reasm_len = 0;
-  reasm_buf[0] = '\0';
-
-  ParseovanyPrikaz prikaz;
-
-  printf("[UART vlákno] Štartujem, fd=%d\n", zs->uart_fd);
-
-  while (!zs->stop) {
-    int len = uart_read_line_nonblock(zs->uart_fd, line, sizeof(line));
-
-    if (len < 0) {
-      fprintf(stderr, "[UART vlákno] Chyba čítania, končím\n");
-      break;
-    }
-
-    if (len == 0) {
-      // nič neprišlo – krátky spánok, aby CPU nelietalo
-      struct timespec ts = {.tv_sec = 0, .tv_nsec = 5 * 1000000L}; // 5 ms
-      nanosleep(&ts, NULL);
-      continue;
-    }
-
-    // line je bez \r\n, ukončené '\0'
-    // printf("[UART] riadok(%d): \"%s\"\n", len, line);
-
-    if (reasm_pridaj_chunk(reasm_buf, &reasm_len, line, &prikaz)) {
-      printf("[UART] >>> PRIKAZ: typ=%s param1=%d param2=%d text_len=%zu\n",
-             typ_prikazu_str(prikaz.typ), prikaz.param1, prikaz.param2,
-             strlen(prikaz.text));
-
-      pthread_mutex_lock(&zs->mutex);
-      stav_aplikuj(&zs->stav, &prikaz);
-      pthread_mutex_unlock(&zs->mutex);
-    }
-  }
-
-  printf("[UART vlákno] Koniec\n");
-  return NULL;
-}
-
-// ─────────────────────────────────────────────────────────────
-// Font so slovenskou diakritikou
-// ─────────────────────────────────────────────────────────────
 
 static Font LoadSlovakFont(const char *path, int fontSize) {
   int codepoints[300];
@@ -152,154 +86,155 @@ static Font LoadSlovakFont(const char *path, int fontSize) {
   return f;
 }
 
-// ─────────────────────────────────────────────────────────────
-// Auto-veľkosť textu
-// ─────────────────────────────────────────────────────────────
+static void cache_update(RenderCache *c, const char *text, Font font,
+                         int screenW, int screenH) {
+  // Uvoľni staré riadky
+  for (int i = 0; i < c->pocet; i++)
+    free(c->riadky[i]);
+  free(c->riadky);
+  c->riadky = NULL;
+  c->pocet = 0;
 
-static int split_lines(const char *text, const char *lines_start[],
-                       int lines_len[], int max_lines) {
-  int count = 0;
-  const char *p = text;
-
-  while (*p && count < max_lines) {
-    lines_start[count] = p;
-    const char *nl = strchr(p, '\n');
-    if (nl) {
-      lines_len[count] = (int)(nl - p);
-      p = nl + 1;
-    } else {
-      lines_len[count] = (int)strlen(p);
-      p += lines_len[count];
-    }
-    count++;
-  }
-
-  return count;
-}
-
-static void measure_text_block(Font font, const char *lines_start[],
-                               const int lines_len[], int line_count,
-                               float fontSize, float *out_max_width,
-                               float *out_total_height) {
-  float spacing = fontSize * LINE_SPACING;
-  float lineHeight = fontSize + spacing;
-  float maxW = 0.0f;
-  char tmp[MAX_TEXT_LEN];
-
-  for (int i = 0; i < line_count; i++) {
-    int len = lines_len[i];
-    if (len >= (int)sizeof(tmp))
-      len = (int)sizeof(tmp) - 1;
-    memcpy(tmp, lines_start[i], len);
-    tmp[len] = '\0';
-
-    Vector2 sz = MeasureTextEx(font, tmp, fontSize, 0);
-    if (sz.x > maxW)
-      maxW = sz.x;
-  }
-
-  *out_max_width = maxW;
-  *out_total_height = line_count * lineHeight - spacing;
-}
-
-static float find_optimal_font_size(Font font, const char *text, int screenW,
-                                    int screenH) {
-  const char *lines_start[512];
-  int lines_len[512];
-  int line_count = split_lines(text, lines_start, lines_len, 512);
-
-  if (line_count == 0)
-    return (float)FONT_SIZE_MIN;
-
-  float maxW = (float)(screenW - 2 * SCREEN_PADDING);
-  float maxH = (float)(screenH - 2 * SCREEN_PADDING);
-
-  int lo = FONT_SIZE_MIN;
-  int hi = FONT_SIZE_MAX;
-  int best = FONT_SIZE_MIN;
-
-  while (lo <= hi) {
-    int mid = (lo + hi) / 2;
-    float w, h;
-    measure_text_block(font, lines_start, lines_len, line_count, (float)mid, &w,
-                       &h);
-
-    if (w <= maxW && h <= maxH) {
-      best = mid;
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
-  }
-
-  return (float)best;
-}
-
-// ─────────────────────────────────────────────────────────────
-// Kreslenie textu
-// ─────────────────────────────────────────────────────────────
-
-static void DrawCenteredMultilineText(Font font, const char *text,
-                                      int screenWidth, int screenHeight,
-                                      float fontSize, Color color) {
-  if (!text || !text[0])
+  if (!text) {
+    c->platna = false;
     return;
-
-  float spacing = fontSize * LINE_SPACING;
-  float lineHeight = fontSize + spacing;
-
-  const char *lines_start[512];
-  int lines_len[512];
-  int line_count = split_lines(text, lines_start, lines_len, 512);
-
-  float totalHeight = line_count * lineHeight - spacing;
-  float y = (screenHeight - totalHeight) / 2.0f;
-
-  char tmp[MAX_TEXT_LEN];
-
-  for (int i = 0; i < line_count; i++) {
-    int len = lines_len[i];
-    if (len >= (int)sizeof(tmp))
-      len = (int)sizeof(tmp) - 1;
-    memcpy(tmp, lines_start[i], len);
-    tmp[len] = '\0';
-
-    Vector2 sz = MeasureTextEx(font, tmp, fontSize, 0);
-    float x = (screenWidth - sz.x) / 2.0f;
-
-    DrawTextEx(font, tmp, (Vector2){x, y}, fontSize, 0, color);
-    y += lineHeight;
   }
+
+  // Rozdeľ text na riadky
+  char *tmp = strdup(text);
+  char *sp, *tok = strtok_r(tmp, "\n", &sp);
+  int cap = 8;
+  c->riadky = malloc(cap * sizeof(char *));
+
+  float max_w = 0.0f;
+  while (tok) {
+    if (c->pocet >= cap) {
+      cap *= 2;
+      c->riadky = realloc(c->riadky, cap * sizeof(char *));
+    }
+    c->riadky[c->pocet++] = strdup(tok);
+    Vector2 sz = MeasureTextEx(font, tok, FONT_SIZE_MAX, 1);
+    if (sz.x > max_w)
+      max_w = sz.x;
+    tok = strtok_r(NULL, "\n", &sp);
+  }
+  free(tmp);
+
+  // Font size podľa šírky (90%) aj výšky (85%)
+  c->font_size = FONT_SIZE_MAX;
+  if (max_w > 0.0f) {
+    float scale_w = (screenW * 0.90f) / max_w;
+    c->font_size = FONT_SIZE_MAX * scale_w;
+  }
+  // Obmedzenie aj výškou – celý blok musí sedieť na obrazovku
+  float line_h_test = c->font_size * 1.35f;
+  float total_h = c->pocet * line_h_test;
+  if (total_h > screenH * 0.85f) {
+    c->font_size = (screenH * 0.85f) / (c->pocet * 1.35f);
+  }
+  if (c->font_size > FONT_SIZE_MAX)
+    c->font_size = FONT_SIZE_MAX;
+  if (c->font_size < FONT_SIZE_MIN)
+    c->font_size = FONT_SIZE_MIN;
+
+  c->line_h = c->font_size * 1.35f;
+  c->start_y = (screenH - c->pocet * c->line_h) * 0.5f;
+  c->platna = true;
 }
 
 // ─────────────────────────────────────────────────────────────
 // Hlavná funkcia – Raylib loop
 // ─────────────────────────────────────────────────────────────
 
-void premietac_run_raylib(int uart_fd, const char *background_path) {
-  ZdielanyStav *zs = malloc(sizeof(ZdielanyStav));
-  if (!zs) {
-    fprintf(stderr, "[Premietac] malloc zlyhal\n");
+void premietac_run_raylib(const char *background_path) {
+
+  Uart_chladnicka_t *uart_chl = calloc(1, sizeof(Uart_chladnicka_t));
+
+  if (uart_chl == NULL) {
+    perror("Chyba alokovania miesta pre uart chladnicku");
     return;
   }
 
-  stav_init(&zs->stav);
-  if (pthread_mutex_init(&zs->mutex, NULL) != 0) {
-    fprintf(stderr, "[Premietac] pthread_mutex_init zlyhal\n");
-    free(zs);
+  uart_chl->aktual_znak = 0;
+  uart_chl->max_znakov = 50;
+  uart_chl->fd = uart_init();
+  uart_chl->nacitane = calloc(uart_chl->max_znakov, sizeof(char));
+  if (uart_chl->nacitane == NULL) {
+    perror("Chyba alokacie miesta pre chaldnicku nacitane");
+    uart_close(uart_chl->fd);
+    free(uart_chl);
     return;
   }
-  zs->uart_fd = uart_fd;
-  zs->stop = 0;
+  pthread_cond_init(&uart_chl->kontroluj, NULL);
+  pthread_cond_init(&uart_chl->zapisuj, NULL);
+  pthread_mutex_init(&uart_chl->mutex, NULL);
+  atomic_store(&uart_chl->pracuj, true);
 
-  pthread_t tid;
-  if (pthread_create(&tid, NULL, uart_thread, zs) != 0) {
-    fprintf(stderr, "[Premietac] Nepodarilo sa vytvoriť UART vlákno\n");
-    pthread_mutex_destroy(&zs->mutex);
-    free(zs);
+  StavPremietania *stav_prem = calloc(1, sizeof(StavPremietania));
+  if (stav_prem == NULL) {
+    perror("Chyba alokacie pamate pre stav premietania");
+    pthread_cond_destroy(&uart_chl->kontroluj);
+    pthread_cond_destroy(&uart_chl->zapisuj);
+    pthread_mutex_destroy(&uart_chl->mutex);
+    free(uart_chl->nacitane);
+    free(uart_chl);
+    return;
+  }
+  atomic_store(&stav_prem->bezi, false);
+  atomic_store(&stav_prem->blackscreen, false);
+  stav_prem->akt_cislo_piesne = 0;
+  stav_prem->akt_cislo_slohy = 1;
+  stav_prem->db = db_init();
+  pthread_mutex_init(&stav_prem->mutex, NULL);
+
+  worker_protokol_t *protokol = calloc(1, sizeof(worker_protokol_t));
+  if (protokol == NULL) {
+    perror("Chyba alokovania miesta pre worker protokol");
+    pthread_cond_destroy(&uart_chl->kontroluj);
+    pthread_cond_destroy(&uart_chl->zapisuj);
+    pthread_mutex_destroy(&uart_chl->mutex);
+    free(uart_chl->nacitane);
+    free(uart_chl);
+    db_destroy(stav_prem->db);
+    pthread_mutex_destroy(&stav_prem->mutex);
+    free(stav_prem);
     return;
   }
 
+  protokol->chladnicka = uart_chl;
+  protokol->stav = stav_prem;
+  printf("Inicializoval som potrebne struktury\n");
+  printf("Inicializujem vlakna\n");
+  pthread_t vlakno_uart;
+  pthread_t vlakno_parser;
+  if (pthread_create(&vlakno_uart, NULL, uart_worker, uart_chl) != 0) {
+    perror("Chyba vytvorenia vlakna uart");
+    pthread_cond_destroy(&uart_chl->kontroluj);
+    pthread_cond_destroy(&uart_chl->zapisuj);
+    pthread_mutex_destroy(&uart_chl->mutex);
+    free(uart_chl->nacitane);
+    free(uart_chl);
+    db_destroy(stav_prem->db);
+    pthread_mutex_destroy(&stav_prem->mutex);
+    free(stav_prem);
+    free(protokol);
+    return;
+  }
+  if (pthread_create(&vlakno_parser, NULL, parser_worker, protokol) != 0) {
+    perror("Chyba vytvorenia vlakna parser");
+    pthread_cond_destroy(&uart_chl->kontroluj);
+    pthread_cond_destroy(&uart_chl->zapisuj);
+    pthread_mutex_destroy(&uart_chl->mutex);
+    free(uart_chl->nacitane);
+    free(uart_chl);
+    db_destroy(stav_prem->db);
+    pthread_mutex_destroy(&stav_prem->mutex);
+    free(stav_prem);
+    free(protokol);
+    return;
+  }
+  printf("Vlakna bezia\n");
+  RenderCache cache = {NULL, 0, FONT_SIZE_MAX, 0, 0, false};
   SetConfigFlags(FLAG_WINDOW_UNDECORATED);
   InitWindow(800, 600, "Premietac");
 
@@ -327,69 +262,113 @@ void premietac_run_raylib(int uart_fd, const char *background_path) {
     printf("[Premietac] OK pozadie: %s (%dx%d)\n", background_path,
            background.width, background.height);
 
-  char txt_buf[MAX_TEXT_LEN];
-  char last_txt[MAX_TEXT_LEN] = "";
-  float cached_fontSize = (float)FONT_SIZE_MIN;
+  // ── Render buffer ─────────────────────────────────────────────────
+  char *render_text = NULL;      // malloc-ovaný text aktuálnej slohy
+  int32_t render_piesen_id = -1; // id piesne v buffri
+  int32_t render_sloha_idx = -1; // index slohy v buffri
+  bool bezi_prev = false;
 
   while (!WindowShouldClose()) {
-    int bezi, blackscreen;
-    int32_t cislo_piesne, cislo_slohy;
-    txt_buf[0] = '\0';
 
-    pthread_mutex_lock(&zs->mutex);
-    bezi = zs->stav.bezi;
-    blackscreen = zs->stav.blackscreen;
-    cislo_piesne = zs->stav.cislo_piesne;
-    cislo_slohy = zs->stav.cislo_slohy;
+    pthread_mutex_lock(&stav_prem->mutex);
+    bool bezi_now = atomic_load(&stav_prem->bezi);
+    bool black_now = atomic_load(&stav_prem->blackscreen);
+    int32_t cur_piesen = stav_prem->akt_cislo_piesne;
+    int32_t cur_sloha = stav_prem->akt_cislo_slohy;
+    pthread_mutex_unlock(&stav_prem->mutex);
 
-    if (bezi && !blackscreen) {
-      Sloha *sloha = stav_get_sloha(&zs->stav, cislo_piesne, cislo_slohy);
-      if (sloha)
-        snprintf(txt_buf, sizeof(txt_buf), "%s", sloha->text);
-    }
-    pthread_mutex_unlock(&zs->mutex);
-
-    if (strcmp(txt_buf, last_txt) != 0) {
-      strncpy(last_txt, txt_buf, sizeof(last_txt) - 1);
-      last_txt[sizeof(last_txt) - 1] = '\0';
-
-      if (txt_buf[0] != '\0')
-        cached_fontSize =
-            find_optimal_font_size(uiFont, txt_buf, screenWidth, screenHeight);
-      printf("[RENDER] Novy text (fontSize=%.0f): \"%.80s\"\n", cached_fontSize,
-             txt_buf);
+    if (bezi_prev && !bezi_now) {
+      free(render_text);
+      render_text = NULL;
+      render_piesen_id = -1;
+      render_sloha_idx = -1;
+      cache_update(&cache, NULL, uiFont, screenWidth, screenHeight);
+      pthread_mutex_lock(&stav_prem->mutex);
+      db_destroy(stav_prem->db);
+      stav_prem->db = db_init();
+      pthread_mutex_unlock(&stav_prem->mutex);
     }
 
+    bezi_prev = bezi_now;
+
+    if (bezi_now &&
+        (cur_piesen != render_piesen_id || cur_sloha != render_sloha_idx)) {
+
+      pthread_mutex_lock(&stav_prem->mutex);
+      const char *found = NULL;
+      for (int i = 0; i < stav_prem->db->akt_pocet && !found; i++) {
+        Piesen *p = &stav_prem->db->piesne[i];
+        if (p->id == cur_piesen) {
+          // hľadaj podľa cislo slohy (1-based)
+          for (int j = 0; j < p->akt_pocet_sloh; j++) {
+            if (p->slohy[j].cislo == cur_sloha) {
+              found = p->slohy[j].text;
+              break;
+            }
+          }
+        }
+      }
+      if (found) {
+        free(render_text);
+        render_text = malloc(strlen(found) + 1);
+        if (render_text)
+          strcpy(render_text, found);
+        render_piesen_id = cur_piesen;
+        render_sloha_idx = cur_sloha;
+        cache_update(&cache, render_text, uiFont, screenWidth, screenHeight);
+      }
+      pthread_mutex_unlock(&stav_prem->mutex);
+    }
+    // sem pokracuje while
     BeginDrawing();
     ClearBackground(BLACK);
 
-    if (!bezi) {
+    if (!bezi_now) {
+      // Pozadie
       if (background.id != 0) {
         Rectangle src, dest;
         compute_fullscreen_dest(background.width, background.height,
                                 screenWidth, screenHeight, &src, &dest);
         DrawTexturePro(background, src, dest, (Vector2){0, 0}, 0.0f, WHITE);
       }
-    } else {
-      if (!blackscreen && txt_buf[0] != '\0') {
-        DrawCenteredMultilineText(uiFont, txt_buf, screenWidth, screenHeight,
-                                  cached_fontSize, WHITE);
+
+    } else if (!black_now && cache.platna) {
+      float spacing = cache.font_size * 0.05f;
+      for (int i = 0; i < cache.pocet; i++) {
+        Vector2 sz =
+            MeasureTextEx(uiFont, cache.riadky[i], cache.font_size, spacing);
+        float x = (screenWidth - sz.x) * 0.5f;
+        float y = cache.start_y + i * cache.line_h;
+        DrawTextEx(uiFont, cache.riadky[i], (Vector2){x, y}, cache.font_size,
+                   spacing, WHITE);
       }
     }
+    // black_now == true → len čierna (ClearBackground(BLACK) stačí)
 
     EndDrawing();
   }
 
-  zs->stop = 1;
-  pthread_join(tid, NULL);
-  pthread_mutex_destroy(&zs->mutex);
+  for (int i = 0; i < cache.pocet; i++) {
 
-  if (background.id != 0)
-    UnloadTexture(background);
-  if (uiFont.texture.id != 0 &&
-      uiFont.texture.id != GetFontDefault().texture.id)
-    UnloadFont(uiFont);
-
+    free(cache.riadky[i]);
+  }
+  free(cache.riadky);
+  free(render_text);
   CloseWindow();
-  free(zs);
+  uart_close(uart_chl->fd);
+  atomic_store(&uart_chl->pracuj, false);
+  pthread_cond_broadcast(&uart_chl->kontroluj);
+
+  pthread_join(vlakno_uart, NULL);
+  pthread_join(vlakno_parser, NULL);
+
+  pthread_cond_destroy(&uart_chl->kontroluj);
+  pthread_cond_destroy(&uart_chl->zapisuj);
+  pthread_mutex_destroy(&uart_chl->mutex);
+  free(uart_chl->nacitane);
+  free(uart_chl);
+  db_destroy(stav_prem->db);
+  pthread_mutex_destroy(&stav_prem->mutex);
+  free(stav_prem);
+  free(protokol);
 }

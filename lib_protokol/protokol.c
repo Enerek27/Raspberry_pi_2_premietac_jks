@@ -1,373 +1,410 @@
-// protokol.c
+
 #include "protokol.h"
 
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* ═══════════════════════════════════════════════════════════════════════
- *  PARSOVANIE
- * ═══════════════════════════════════════════════════════════════════════ */
-
-int protokol_parsuj(const char *sprava, ParseovanyPrikaz *out) {
-  if (!sprava || !out)
-    return 0;
-  memset(out, 0, sizeof(*out));
-
-  /* ── %$X$Y$% príkazy ── */
-  if (sprava[0] == '%' && sprava[1] == '$') {
-    int typ_id, param;
-    if (sscanf(sprava, "%%$%d$%d$%%", &typ_id, &param) == 2) {
-      out->param1 = param;
-      switch (typ_id) {
-      case 1:
-        out->typ = PRIKAZ_SPUSTI;
-        return 1;
-      case 2:
-        out->typ = PRIKAZ_VYPNI;
-        return 1;
-      case 3:
-        out->typ = PRIKAZ_POSLI_PIESEN;
-        out->param1 = param;
-        return 1;
-      case 4:
-        out->typ = PRIKAZ_ZATMAV;
-        return 1;
-      case 5:
-        out->typ = PRIKAZ_ODTMAV;
-        return 1;
-      default:
-        return 0;
-      }
-    }
+void dyn_pole_posun_dopredu(pole_t *p, size_t okolko) {
+  if (!p || okolko == 0) {
+    return;
   }
 
-  /* ── %|piesen|sloha|% ── */
-  if (sprava[0] == '%' && sprava[1] == '|') {
-    int piesen, sloha;
-    if (sscanf(sprava, "%%|%d|%d|%%", &piesen, &sloha) == 2) {
-      out->typ = PRIKAZ_PREPNI_NA;
-      out->param1 = piesen;
-      out->param2 = sloha;
-      return 1;
-    }
+  if (okolko >= (size_t)p->aktual_pocet) {
+    p->aktual_pocet = 0;
+    if (p->max_pocet > 0)
+      p->pole[0] = '\0';
+    return;
   }
 
-  /* ── $$cislo$$text%%% ── */
-  if (strncmp(sprava, "$$", 2) == 0) {
-    const char *p = sprava + 2;
-    char *end_num;
-    long cislo = strtol(p, &end_num, 10);
-    if (end_num != p && strncmp(end_num, "$$", 2) == 0) {
-      const char *text_start = end_num + 2;
-      size_t tlen = strlen(text_start);
-      if (tlen >= 3 && strcmp(text_start + tlen - 3, "%%%") == 0)
-        tlen -= 3;
-      out->typ = PRIKAZ_DATA_STROFY;
-      out->param1 = (int32_t)cislo;
-      snprintf(out->text, MAX_TEXT_LEN, "%.*s", (int)tlen, text_start);
-      return 1;
-    }
-  }
+  size_t zostatok = (size_t)p->aktual_pocet - okolko;
 
-  return 0;
+  memmove(p->pole, p->pole + okolko, zostatok);
+
+  p->aktual_pocet = zostatok;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════
- *  REASSEMBLY – stream parser
- *  - chunk = surové bajty zo seriálu (môže byť prázdny)
- *  - buf/reasm_buf = vnútorný buffer s doteraz prijatými dátami
- *  - vráti 1 ak sa podarilo poskladať a spracovať 1 správu, inak 0
- * ═══════════════════════════════════════════════════════════════════════ */
+pole_t *dyn_pole_init() {
+  pole_t *p = calloc(1, sizeof(pole_t));
 
-int reasm_pridaj_chunk(char *buf, int *buf_len, const char *chunk,
-                       ParseovanyPrikaz *out) {
-  int chunk_len = (int)strlen(chunk);
-
-  /* 1) Ak máme nový chunk, prilepíme ho na koniec buffra */
-  if (chunk_len > 0) {
-    if (*buf_len + chunk_len >= REASM_BUF_SIZE - 1) {
-      fprintf(stderr, "[reasm] Buffer pretiekol (%d + %d), resetujem\n",
-              *buf_len, chunk_len);
-      *buf_len = 0;
-      buf[0] = '\0';
-    }
-
-    memcpy(buf + *buf_len, chunk, chunk_len);
-    *buf_len += chunk_len;
-    buf[*buf_len] = '\0';
+  if (p == NULL) {
+    perror("Chyba alokovanie pre pole");
+    return NULL;
   }
 
-  /* 2) Teraz sa pokúsime z buffra vytiahnuť jednu kompletnú správu */
-  for (;;) {
-    if (*buf_len < 4)
-      return 0; // príliš málo dát na akúkoľvek správu
+  p->aktual_pocet = 0;
+  p->max_pocet = 50;
+  p->pole = calloc(p->max_pocet, sizeof(char));
 
-    /* 2.1) Nájdeme najbližší možný začiatok správy */
-    int start = -1;
-    for (int i = 0; i < *buf_len - 1; i++) {
-      if (buf[i] == '%' && (buf[i + 1] == '$' || buf[i + 1] == '|')) {
-        start = i;
-        break;
-      }
-      if (buf[i] == '$' && buf[i + 1] == '$') {
-        start = i;
-        break;
-      }
-    }
-
-    if (start < 0) {
-      // V buffri nie je ani začiatok, necháme si posledný bajt pre prípad
-      char last = buf[*buf_len - 1];
-      buf[0] = last;
-      *buf_len = 1;
-      buf[1] = '\0';
-      return 0;
-    }
-
-    if (start > 0) {
-      // Odstráň bordel pred začiatkom správy
-      memmove(buf, buf + start, *buf_len - start);
-      *buf_len -= start;
-      buf[*buf_len] = '\0';
-    }
-
-    if (*buf_len < 4)
-      return 0;
-
-    /* 2.2) Podľa prefixu hľadáme terminátor */
-    char *end = NULL;
-    int msg_len = 0;
-
-    if (buf[0] == '%' && buf[1] == '$') {
-      // %$X$Y$% → koniec "$%"
-      end = strstr(buf + 2, "$%");
-      if (!end)
-        return 0; // čakáme na ďalšie dáta
-      msg_len = (int)(end - buf) + 2;
-
-    } else if (buf[0] == '%' && buf[1] == '|') {
-      // %|piesen|sloha|%
-      end = strstr(buf + 2, "|%");
-      if (!end)
-        return 0;
-      msg_len = (int)(end - buf) + 2;
-
-    } else if (buf[0] == '$' && buf[1] == '$') {
-      // $$cislo$$text%%%
-      end = strstr(buf + 2, "%%%");
-      if (!end)
-        return 0;
-      msg_len = (int)(end - buf) + 3;
-
-    } else {
-      // Nečakaný prefix – posuň sa o 1 znak ďalej a skús znova
-      memmove(buf, buf + 1, *buf_len - 1);
-      (*buf_len)--;
-      buf[*buf_len] = '\0';
-      continue;
-    }
-
-    if (msg_len >= REASM_BUF_SIZE) {
-      fprintf(stderr, "[reasm] Správa priveľká (%d), zahadzujem\n", msg_len);
-      int remaining = *buf_len - msg_len;
-      memmove(buf, buf + msg_len, remaining);
-      *buf_len = remaining;
-      buf[*buf_len] = '\0';
-      // skúsiť ďalšiu správu z toho, čo ostalo
-      continue;
-    }
-
-    /* 2.3) Skopíruj kompletnú správu do lokálneho buffra */
-    char msg[REASM_BUF_SIZE];
-    memcpy(msg, buf, msg_len);
-    msg[msg_len] = '\0';
-
-    /* 2.4) Odstráň túto správu z reasm buffra */
-    int remaining = *buf_len - msg_len;
-    memmove(buf, buf + msg_len, remaining);
-    *buf_len = remaining;
-    buf[*buf_len] = '\0';
-
-    /* 2.5) Skús správu parsovať */
-    if (protokol_parsuj(msg, out)) {
-      // Úspech – volajúci spracuje out a ak chce ďalšiu správu,
-      // zavolá reasm_pridaj_chunk znova s chunk="".
-      return 1;
-    } else {
-      fprintf(stderr, "[reasm] Nepodarilo sa parsovať: \"%s\"\n", msg);
-      // Skúsime nájsť ďalšiu správu v tom, čo ostalo
-      continue;
-    }
+  if (p->pole == NULL) {
+    free(p);
+    perror("Chyba alokacie pole pola");
+    return NULL;
   }
 
-  return 0;
+  return p;
+}
+void dyn_pole_destroy(pole_t *p) {
+  free(p->pole);
+  free(p);
+}
+bool dyn_pole_zvac(pole_t *p) {
+  int nova = p->max_pocet + 50;
+  char *temp = realloc(p->pole, nova * sizeof(char));
+
+  if (temp == NULL) {
+    perror("Chyba zvacsenia dyn pola");
+    return false;
+  }
+  p->max_pocet = nova;
+  p->pole = temp;
+  return true;
+}
+bool sloha_zvac(Sloha *s) {
+  int nova = s->max_pocet + 50;
+  char *temp = realloc(s->text, nova * sizeof(char));
+
+  if (temp == NULL) {
+    perror("Chyba zvacsenia sloha text");
+    return false;
+  }
+  s->max_pocet = nova;
+  s->text = temp;
+  return true;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════
- *  POMOCNÉ FUNKCIE
- * ═══════════════════════════════════════════════════════════════════════ */
+Sloha *sloha_init() {
+  Sloha *s = calloc(1, sizeof(Sloha));
+  if (s == NULL) {
+    perror("Nedostatok pamate chyba sloha");
+    return NULL;
+  }
 
-/* Odstráni úvodné čísla z textu slohy */
-static const char *strip_leading_numbers(const char *s) {
-  while (*s >= '0' && *s <= '9')
-    s++;
-  while (*s == ' ' || *s == '\t' || *s == '.' || *s == '-' || *s == ':')
-    s++;
+  s->akt_lenght = 0;
+  s->cislo = 0;
+  s->max_pocet = 100;
+  s->text = calloc(s->max_pocet, sizeof(char));
+
+  if (s->text == NULL) {
+    perror("Chyba alokovania sloha text");
+    return NULL;
+  }
+
   return s;
 }
-
-/* Nahradí všetky výskyty znaku from za to v jednom reťazci */
-static void replace_char_inplace(char *s, char from, char to) {
-  for (; *s; s++) {
-    if (*s == from)
-      *s = to;
-  }
+static void sloha_clear(Sloha *s) {
+  if (!s)
+    return;
+  free(s->text);
+  s->text = NULL;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════
- *  STAV
- * ═══════════════════════════════════════════════════════════════════════ */
-
-void stav_init(StavPremietania *s) {
-  memset(s, 0, sizeof(*s));
-  s->cakajuca_piesen_id = -1;
+void sloha_destroy(Sloha *s) {
+  sloha_clear(s);
+  free(s);
 }
 
-Piesen *stav_get_piesen(StavPremietania *s, int32_t piesen_idx) {
-  if (piesen_idx < 0 || piesen_idx >= s->db.pocet)
-    return NULL;
-  return &s->db.piesne[piesen_idx];
-}
-
-Sloha *stav_get_sloha(StavPremietania *s, int32_t piesen_idx,
-                      int32_t sloha_cislo) {
-  Piesen *p = stav_get_piesen(s, piesen_idx);
-  if (!p)
-    return NULL;
-  for (int i = 0; i < p->pocet_sloh; i++) {
-    if (p->slohy[i].cislo == sloha_cislo)
-      return &p->slohy[i];
-  }
-  return NULL;
-}
-
-static Piesen *db_najdi_alebo_vytvor(DatabazaPiesni *db, int32_t id) {
-  for (int i = 0; i < db->pocet; i++) {
-    if (db->piesne[i].id == id)
-      return &db->piesne[i];
-  }
-  if (db->pocet >= MAX_PIESNI) {
-    fprintf(stderr, "[DB] Plná databáza piesní!\n");
+Piesen *piesen_init() {
+  Piesen *p = calloc(1, sizeof(Piesen));
+  if (p == NULL) {
+    perror("Chyba alokovania pre piesen");
     return NULL;
   }
-  Piesen *p = &db->piesne[db->pocet++];
-  memset(p, 0, sizeof(*p));
-  p->id = id;
+  p->akt_pocet_sloh = 0;
+  p->max_pocet = 5;
+  p->id = 0;
+  p->slohy = calloc(p->max_pocet, sizeof(Sloha));
+
+  if (p->slohy == NULL) {
+    perror("Chyba alokovanie pre piesen slohy");
+    free(p);
+    return NULL;
+  }
+
   return p;
 }
 
-void stav_aplikuj(StavPremietania *s, const ParseovanyPrikaz *p) {
-  switch (p->typ) {
+bool piesen_zvac(Piesen *p) {
+  int nova = p->max_pocet + 5;
+  Sloha *temp = realloc(p->slohy, nova * sizeof(Sloha));
 
-  case PRIKAZ_SPUSTI:
-    s->bezi = 1;
-    s->blackscreen = 0;
-    printf("[Stav] Premietanie SPUSTENÉ\n");
-    break;
-
-  case PRIKAZ_VYPNI:
-    printf("[Stav] Premietanie ZASTAVENÉ, reset databázy\n");
-    stav_init(s);
-    break;
-
-  case PRIKAZ_POSLI_PIESEN:
-    s->cakajuca_piesen_id = p->param1;
-    db_najdi_alebo_vytvor(&s->db, p->param1);
-    printf("[Stav] Príjem piesne id=%d\n", p->param1);
-    break;
-
-  case PRIKAZ_DATA_STROFY: {
-    if (s->cakajuca_piesen_id < 0) {
-      fprintf(stderr, "[Stav] Strofa bez hlavičky piesne, ignorujem\n");
-      break;
-    }
-    Piesen *piesen = db_najdi_alebo_vytvor(&s->db, s->cakajuca_piesen_id);
-    if (!piesen)
-      break;
-    if (piesen->pocet_sloh >= MAX_SLOH) {
-      fprintf(stderr, "[Stav] Pieseň %d má príliš veľa slôh\n", piesen->id);
-      break;
-    }
-
-    Sloha *sloha = &piesen->slohy[piesen->pocet_sloh++];
-    sloha->cislo = p->param1;
-
-    /* 1) odstráň úvodné čísla zo správy */
-    const char *clean = strip_leading_numbers(p->text);
-
-    /* 2) skopíruj do dočasného buffra, aby sme mohli meniť text */
-    char tmp[MAX_TEXT_LEN];
-    snprintf(tmp, sizeof(tmp), "%s", clean);
-
-    /* 3) nahradiť ^ späť za newline */
-    replace_char_inplace(tmp, '^', '\n');
-
-    /* 4) uložiť finálny text do slohy */
-    snprintf(sloha->text, MAX_TEXT_LEN, "%s", tmp);
-
-    printf("[Stav] Uložená strofa %d piesne %d: %.40s%s\n", p->param1,
-           piesen->id, sloha->text, strlen(sloha->text) > 40 ? "..." : "");
-    break;
+  if (temp == NULL) {
+    perror("Chyba zvacsenia piesne slohy");
+    return false;
   }
+  memset(temp + p->max_pocet, 0, 5 * sizeof(Sloha));
+  p->max_pocet = nova;
+  p->slohy = temp;
+  return true;
+}
 
-  case PRIKAZ_ZATMAV:
-    s->blackscreen = 1;
-    printf("[Stav] ZATMAVENÉ\n");
-    break;
+static void piesen_clear(Piesen *p) {
+  if (!p)
+    return;
+  for (int i = 0; i < p->akt_pocet_sloh; i++)
+    sloha_clear(&p->slohy[i]);
+  free(p->slohy);
+  p->slohy = NULL;
+}
+void piesen_destroy(Piesen *p) {
+  piesen_clear(p);
+  free(p);
+}
 
-  case PRIKAZ_ODTMAV:
-    s->blackscreen = 0;
-    printf("[Stav] ODTMAVENÉ\n");
-    break;
-
-  case PRIKAZ_PREPNI_NA: {
-    int32_t piesen_idx = p->param1;
-    int32_t sloha_cislo = p->param2;
-    s->cislo_piesne = piesen_idx;
-    s->cislo_slohy = sloha_cislo;
-
-    Sloha *sloha = stav_get_sloha(s, piesen_idx, sloha_cislo);
-    printf("[Stav] Prepnuté na pieseň[%d] sloha %d\n", piesen_idx, sloha_cislo);
-    if (sloha)
-      printf("[Zobraz] %s\n", sloha->text);
-    else
-      printf("[Zobraz] (sloha nenájdená)\n");
-    break;
+DatabazaPiesni *db_init() {
+  DatabazaPiesni *db = calloc(1, sizeof(DatabazaPiesni));
+  if (db == NULL) {
+    perror("Chyba alokacie pre db");
+    return NULL;
   }
+  db->akt_pocet = 0;
+  db->max_pocet = 5;
+  db->piesne = calloc(db->max_pocet, sizeof(Piesen));
+  if (db->piesne == NULL) {
+    perror("Chyba alokovania pre db piesne");
+    free(db);
+    return NULL;
+  }
+  return db;
+}
 
-  default:
-    break;
+bool db_zvac(DatabazaPiesni *db) {
+  int nova = db->max_pocet + 5;
+  Piesen *temp = realloc(db->piesne, nova * sizeof(Piesen));
+
+  if (temp == NULL) {
+    perror("Chyba zvacsenia db piesne");
+    return false;
+  }
+  memset(temp + db->max_pocet, 0, 5 * sizeof(Piesen));
+  db->max_pocet = nova;
+  db->piesne = temp;
+  return true;
+}
+
+void db_destroy(DatabazaPiesni *db) {
+  if (!db) {
+    return;
+  }
+  for (int i = 0; i < db->akt_pocet; i++) {
+    piesen_clear(&db->piesne[i]);
+  }
+  free(db->piesne);
+  free(db);
+}
+
+void nahrad_vsetky_znaky(char *s, char hladaj, char nahrad) {
+  while ((s = strchr(s, hladaj)) != NULL) {
+    *s = nahrad;
+    s++;
   }
 }
 
-const char *typ_prikazu_str(TypPrikazu t) {
-  switch (t) {
-  case PRIKAZ_SPUSTI:
-    return "SPUSTI";
-  case PRIKAZ_VYPNI:
-    return "VYPNI";
-  case PRIKAZ_POSLI_PIESEN:
-    return "POSLI_PIESEN";
-  case PRIKAZ_ZATMAV:
-    return "ZATMAV";
-  case PRIKAZ_ODTMAV:
-    return "ODTMAV";
-  case PRIKAZ_PREPNI_NA:
-    return "PREPNI_NA";
-  case PRIKAZ_DATA_STROFY:
-    return "DATA_STROFY";
-  default:
-    return "NEZNÁMY";
+void *parser_worker(void *arg) {
+  worker_protokol_t *wp = arg;
+  Uart_chladnicka_t *uart_chld = wp->chladnicka;
+  StavPremietania *premietac_chld = wp->stav;
+  pole_t *dyn_pole = dyn_pole_init();
+  bool prijimam_piesen = false;
+  int cislo_piesne = 0;
+
+  while (atomic_load(&uart_chld->pracuj)) {
+    pthread_mutex_lock(&uart_chld->mutex);
+
+    while (uart_chld->aktual_znak == 0) {
+      pthread_cond_wait(&uart_chld->kontroluj, &uart_chld->mutex);
+    }
+
+    if (!atomic_load(&uart_chld->pracuj)) {
+      pthread_mutex_unlock(&uart_chld->mutex);
+      break;
+    }
+
+    int len = uart_chld->aktual_znak;
+    while (dyn_pole->aktual_pocet + len >= dyn_pole->max_pocet) {
+      if (!dyn_pole_zvac(dyn_pole)) {
+        atomic_store(&uart_chld->pracuj, 0);
+        pthread_mutex_unlock(&uart_chld->mutex);
+        dyn_pole_destroy(dyn_pole);
+        pthread_exit(NULL);
+      }
+    }
+
+    memcpy(dyn_pole->pole + dyn_pole->aktual_pocet, uart_chld->nacitane, len);
+    uart_chld->aktual_znak = 0;
+    dyn_pole->aktual_pocet += len;
+    pthread_mutex_unlock(&uart_chld->mutex);
+
+    if (dyn_pole->aktual_pocet >= dyn_pole->max_pocet) {
+      if (!dyn_pole_zvac(dyn_pole)) {
+        dyn_pole_destroy(dyn_pole);
+        atomic_store(&uart_chld->pracuj, 0);
+        pthread_exit(NULL);
+      }
+    }
+    dyn_pole->pole[dyn_pole->aktual_pocet] = '\0';
+    char *skuska = strstr(dyn_pole->pole, "%$");
+    if (skuska == NULL) {
+      if (prijimam_piesen) {
+        // Prijimanie a zaznamenavanie slohy piesne
+        char *zaciatok = strstr(dyn_pole->pole, "$$");
+        if (zaciatok == NULL) {
+          continue;
+        }
+        char *koniec_cisla = strstr(zaciatok + 1, "$$");
+        if (koniec_cisla == NULL) {
+          continue;
+        }
+        char *koniec_textu = strstr(koniec_cisla + 1, "%%%");
+
+        if (koniec_textu == NULL) {
+          continue;
+        }
+
+        size_t rozdiel_pri_cisle = koniec_cisla + 2 - zaciatok;
+        char temp[30] = {0};
+        memcpy(temp, zaciatok, rozdiel_pri_cisle);
+        temp[rozdiel_pri_cisle] = '\0';
+        int cislo_slohy = 0;
+        if (sscanf(temp, "$$%d$$", &cislo_slohy) != 1) {
+          perror("Zly format chyba chyba pri slohe");
+          dyn_pole_destroy(dyn_pole);
+          atomic_store(&uart_chld->pracuj, 0);
+          pthread_exit(NULL);
+        }
+        int dlzka_textu = koniec_textu - (koniec_cisla + 2);
+        Sloha *s = sloha_init();
+
+        while (s->max_pocet <= dlzka_textu + 1) {
+          sloha_zvac(s);
+        }
+        memcpy(s->text, koniec_cisla + 2, dlzka_textu);
+        s->akt_lenght = dlzka_textu;
+        s->text[s->akt_lenght] = '\0';
+        s->cislo = cislo_slohy;
+        nahrad_vsetky_znaky(s->text, '^', '\n');
+        printf("[parser] sloha %d piesen %d:%s\n", cislo_slohy, cislo_piesne,
+               s->text);
+        pthread_mutex_lock(&premietac_chld->mutex);
+
+        bool nasiel = false;
+
+        for (int i = 0; i < premietac_chld->db->akt_pocet; i++) {
+          if (premietac_chld->db->piesne[i].id == cislo_piesne) {
+            Piesen *najdena = &premietac_chld->db->piesne[i];
+            while (najdena->max_pocet - 1 <= najdena->akt_pocet_sloh) {
+              piesen_zvac(najdena);
+            }
+            najdena->slohy[najdena->akt_pocet_sloh] = *s;
+            najdena->akt_pocet_sloh++;
+
+            nasiel = true;
+            pthread_mutex_unlock(&premietac_chld->mutex);
+            break;
+          }
+        }
+        if (!nasiel) {
+          pthread_mutex_unlock(&premietac_chld->mutex);
+          Piesen *p = piesen_init();
+          p->id = cislo_piesne;
+          p->slohy[p->akt_pocet_sloh] = *s;
+          p->akt_pocet_sloh++;
+          pthread_mutex_lock(&premietac_chld->mutex);
+          while (premietac_chld->db->max_pocet - 1 <=
+                 premietac_chld->db->akt_pocet) {
+            db_zvac(premietac_chld->db);
+          }
+          premietac_chld->db->piesne[premietac_chld->db->akt_pocet] = *p;
+          premietac_chld->db->akt_pocet++;
+          pthread_mutex_unlock(&premietac_chld->mutex);
+          free(p);
+        }
+        free(s);
+        size_t offset = (koniec_textu + 3) - dyn_pole->pole;
+        dyn_pole_posun_dopredu(dyn_pole, offset);
+        continue;
+
+        // ajajajjajaja
+      }
+      char *prepnutie_test = strstr(dyn_pole->pole, "%|");
+      if (prepnutie_test == NULL) {
+        continue;
+      }
+
+      char *prepnutie_koniec = strstr(prepnutie_test + 1, "|%");
+      if (prepnutie_koniec == NULL) {
+        continue;
+      }
+      int dlzka_copy = (prepnutie_koniec + 2) - prepnutie_test;
+      char tempor[30] = {0};
+      memcpy(tempor, prepnutie_test, dlzka_copy);
+      tempor[dlzka_copy] = '\0';
+      int32_t prep_songa = 0;
+      int32_t prep_strofa = 1;
+      if (sscanf(tempor, "%%|%d|%d|%%", &prep_songa, &prep_strofa) != 2) {
+        perror("Chyba parsovania zly format pri prepinani");
+        dyn_pole_destroy(dyn_pole);
+        atomic_store(&uart_chld->pracuj, 0);
+        pthread_exit(NULL);
+      }
+
+      pthread_mutex_lock(&premietac_chld->mutex);
+      premietac_chld->akt_cislo_piesne = prep_songa;
+      premietac_chld->akt_cislo_slohy = prep_strofa;
+      pthread_mutex_unlock(&premietac_chld->mutex);
+      size_t offset = (prepnutie_test - dyn_pole->pole) + dlzka_copy;
+      dyn_pole_posun_dopredu(dyn_pole, offset);
+
+      continue;
+    }
+    prijimam_piesen = false;
+    // sem pokracuju vsetky ostatne prikazy
+    char *koniec_skuska = strstr(skuska + 1, "$%");
+    if (koniec_skuska == NULL) {
+      continue;
+    }
+    koniec_skuska += 2;
+    size_t dlzka_odpoctu = koniec_skuska - skuska;
+    char prikaz[30] = {0};
+    memcpy(prikaz, skuska, dlzka_odpoctu);
+    prikaz[dlzka_odpoctu] = '\0';
+    int a = 0;
+
+    if (sscanf(prikaz, "%%$%d$%d$%%", &a, &cislo_piesne) != 2) {
+      perror("Chyba priradenia prikazov nic sa nenaslo zly format");
+      dyn_pole_destroy(dyn_pole);
+      atomic_store(&uart_chld->pracuj, 0);
+      pthread_exit(NULL);
+    }
+    switch (a) {
+    case 1:
+      // spusti
+      atomic_store(&premietac_chld->bezi, true);
+      break;
+    case 2:
+      // vypni
+      atomic_store(&premietac_chld->bezi, false);
+      break;
+    case 3:
+      // prijmi piesen
+      prijimam_piesen = true;
+      break;
+    case 4:
+      // zatmav obrazovku
+      atomic_store(&premietac_chld->blackscreen, true);
+      break;
+    case 5:
+      // odtmav obrazovku
+      atomic_store(&premietac_chld->blackscreen, false);
+      break;
+    }
+    dyn_pole_posun_dopredu(dyn_pole, dlzka_odpoctu);
   }
+
+  pthread_exit(NULL);
 }

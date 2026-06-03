@@ -1,12 +1,16 @@
 #ifndef PROTOKOL_H
 #define PROTOKOL_H
 
+#include "uart.h"
+#include <stdatomic.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* ── Maximá ──────────────────────────────────────────────────────────── */
 #define MAX_PIESNI 100
 #define MAX_SLOH 100
-#define MAX_TEXT_LEN 3000
+#define MAX_TEXT_LEN 10000
 #define REASM_BUF_SIZE 8192 /* buffer na skladanie chunkov */
 
 /* ── Typy príkazov ───────────────────────────────────────────────────── */
@@ -32,56 +36,63 @@ typedef struct {
 /* ── Sloha piesne ────────────────────────────────────────────────────── */
 typedef struct {
   int32_t cislo;
-  char text[MAX_TEXT_LEN];
+  int max_pocet;
+  int akt_lenght;
+  char *text;
 } Sloha;
+
+Sloha *sloha_init();
+void sloha_destroy(Sloha *s);
+bool sloha_zvac(Sloha *s);
 
 /* ── Pieseň ──────────────────────────────────────────────────────────── */
 typedef struct {
   int32_t id;
-  int pocet_sloh;
-  Sloha slohy[MAX_SLOH];
+  int akt_pocet_sloh;
+  int max_pocet;
+  Sloha *slohy;
 } Piesen;
+
+Piesen *piesen_init();
+void piesen_destroy(Piesen *p);
+bool piesen_zvac(Piesen *p);
 
 /* ── Databáza piesní ─────────────────────────────────────────────────── */
 typedef struct {
-  Piesen piesne[MAX_PIESNI];
-  int pocet;
+  Piesen *piesne;
+  int akt_pocet;
+  int max_pocet;
 } DatabazaPiesni;
+
+DatabazaPiesni *db_init();
+void db_destroy(DatabazaPiesni *db);
+bool db_zvac(DatabazaPiesni *db);
+
+typedef struct {
+  char *pole;
+  int aktual_pocet;
+  int max_pocet;
+} pole_t;
+
+pole_t *dyn_pole_init();
+void dyn_pole_destroy(pole_t *p);
+bool dyn_pole_zvac(pole_t *p);
+void dyn_pole_posun_dopredu(pole_t *p, size_t okolko);
 
 /* ── Stav premietania ────────────────────────────────────────────────── */
 typedef struct {
-  int bezi;
-  int blackscreen;
-  int32_t cislo_piesne;       /* index do poľa piesní */
-  int32_t cislo_slohy;        /* 1-based */
-  int32_t cakajuca_piesen_id; /* -1 = žiadna */
-  DatabazaPiesni db;
+  atomic_bool bezi;
+  atomic_bool blackscreen;
+  int32_t akt_cislo_piesne; /* index do poľa piesní */
+  int32_t akt_cislo_slohy;  /* 1-based */
+  DatabazaPiesni *db;
+  pthread_mutex_t mutex;
 } StavPremietania;
 
-/* ── Funkcie parsovania ───────────────────────────────────────────────── */
+typedef struct {
+  StavPremietania *stav;
+  Uart_chladnicka_t *chladnicka;
+} worker_protokol_t;
 
-/**
- * Pokúsi sa parsovať úplnú správu z reťazca.
- * Vráti 1 ak sa podarilo, 0 ak správa nie je ešte kompletná / neznáma.
- */
-int protokol_parsuj(const char *sprava, ParseovanyPrikaz *out);
-
-/**
- * Pridá chunk (riadok) do reassembly buffra.
- * Ak buffer obsahuje kompletnú správu, vráti ju cez `out` a vymaže buffer.
- * Vráti 1 ak je správa kompletná, 0 ak čaká na ďalšie chunky.
- */
-int reasm_pridaj_chunk(char *buf, int *buf_len, const char *chunk,
-                       ParseovanyPrikaz *out);
-
-/* ── Stavové funkcie ─────────────────────────────────────────────────── */
-void stav_init(StavPremietania *s);
-void stav_aplikuj(StavPremietania *s, const ParseovanyPrikaz *p);
-
-/* ── Pomocné ─────────────────────────────────────────────────────────── */
-const char *typ_prikazu_str(TypPrikazu t);
-Sloha *stav_get_sloha(StavPremietania *s, int32_t piesen_idx,
-                      int32_t sloha_cislo);
-Piesen *stav_get_piesen(StavPremietania *s, int32_t piesen_idx);
-
+void *parser_worker(void *arg);
 #endif /* PROTOKOL_H */

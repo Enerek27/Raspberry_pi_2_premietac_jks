@@ -1,7 +1,11 @@
-#include "uart.h"
 
+#include "uart.h"
 #include <fcntl.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/select.h>
 #include <termios.h>
@@ -71,22 +75,43 @@ int uart_read_line(int fd, char *line, int max_len) {
   return pos;
 }
 
-int uart_read_line_nonblock(int fd, char *line, int max_len) {
-  fd_set set;
-  struct timeval tv;
-  FD_ZERO(&set);
-  FD_SET(fd, &set);
-  tv.tv_sec = 0;
-  tv.tv_usec = 0;
+bool navis_chladnicku(Uart_chladnicka_t *ch) {
+  int navis = ch->max_znakov + 100;
+  char *temp = realloc(ch->nacitane, navis * sizeof(char));
+  if (temp == NULL) {
+    perror("Chyba zvysenia priestoru pre chladnicku");
+    return false;
+  }
+  ch->nacitane = temp;
+  ch->max_znakov = navis;
+  return true;
+}
 
-  int rv = select(fd + 1, &set, NULL, NULL, &tv);
-  if (rv < 0) {
-    perror("select");
-    return -1;
+void *uart_worker(void *arg) {
+  Uart_chladnicka_t *chladnicka = arg;
+  char c;
+  pthread_mutex_lock(&chladnicka->mutex);
+  int fd = chladnicka->fd;
+  pthread_mutex_unlock(&chladnicka->mutex);
+
+  while (atomic_load(&chladnicka->pracuj)) {
+
+    int n = read(fd, &c, 1);
+    if (n <= 0) {
+      break;
+    }
+
+    pthread_mutex_lock(&chladnicka->mutex);
+    if (!(chladnicka->aktual_znak < chladnicka->max_znakov - 1)) {
+      if (!navis_chladnicku(chladnicka)) {
+        atomic_store(&chladnicka->pracuj, 0);
+        pthread_mutex_unlock(&chladnicka->mutex);
+        pthread_exit(NULL);
+      }
+    }
+    chladnicka->nacitane[chladnicka->aktual_znak++] = c;
+    pthread_cond_signal(&chladnicka->kontroluj);
+    pthread_mutex_unlock(&chladnicka->mutex);
   }
-  if (rv == 0) {
-    // Žiadne dáta – neblokuj
-    return 0;
-  }
-  return uart_read_line(fd, line, max_len);
+  pthread_exit(NULL);
 }
