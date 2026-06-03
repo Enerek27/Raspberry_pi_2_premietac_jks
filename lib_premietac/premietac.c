@@ -4,12 +4,14 @@
 #include "raylib.h"
 #include "uart.h"
 
+#include <libgen.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define FONT_SIZE_MIN 20
 #define FONT_SIZE_MAX 200
@@ -22,6 +24,26 @@ typedef struct {
   float start_y;
   bool platna; // či je cache aktuálna
 } RenderCache;
+
+static const char *get_exe_dir(void) {
+  static char exe_path[4096];
+  static char exe_dir[4096];
+
+  ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+  if (len < 0) {
+    // fallback – použi aktuálny adresár
+    return ".";
+  }
+  exe_path[len] = '\0';
+  // dirname môže modifikovať buffer, preto kopírujeme
+  strncpy(exe_dir, dirname(exe_path), sizeof(exe_dir) - 1);
+  return exe_dir;
+}
+
+// Zostav cestu relatívnu k exe
+static void build_path(char *out, size_t out_size, const char *filename) {
+  snprintf(out, out_size, "%s/%s", get_exe_dir(), filename);
+}
 
 static void compute_fullscreen_dest(int texW, int texH, int screenW,
                                     int screenH, Rectangle *src,
@@ -260,9 +282,20 @@ void premietac_run_raylib(const char *background_path) {
 
   printf("[Premietac] Rozlisenie: %d x %d\n", screenWidth, screenHeight);
 
-  Font uiFont = LoadSlovakFont("../NotoSans-Bold.ttf", FONT_SIZE_MAX);
+  char font_path[4096];
+  build_path(font_path, sizeof(font_path), "NotoSans-Bold.ttf");
+  Font uiFont = LoadSlovakFont(font_path, FONT_SIZE_MAX);
 
-  Texture2D background = LoadTexture(background_path);
+  char bg_path[4096];
+  // Ak background_path je absolútna cesta, nechaj ju tak
+  // Ak je relatívna (nezačína /), zostav ju od exe
+  if (background_path[0] == '/') {
+    strncpy(bg_path, background_path, sizeof(bg_path) - 1);
+    bg_path[sizeof(bg_path) - 1] = '\0'; // ← pridaj
+  } else {
+    build_path(bg_path, sizeof(bg_path), background_path);
+  }
+  Texture2D background = LoadTexture(bg_path);
   if (background.id == 0)
     printf("[Premietac] CHYBA pozadie: '%s'\n", background_path);
   else
