@@ -99,45 +99,52 @@ static void cache_update(RenderCache *c, const char *text, Font font,
     return;
   }
 
+  // Rozdeľ na riadky
   char *tmp = strdup(text);
   char *sp, *tok = strtok_r(tmp, "\n", &sp);
   int cap = 8;
   c->riadky = malloc(cap * sizeof(char *));
 
-  float max_w = 0.0f;
   while (tok) {
     if (c->pocet >= cap) {
       cap *= 2;
       c->riadky = realloc(c->riadky, cap * sizeof(char *));
     }
     c->riadky[c->pocet++] = strdup(tok);
-    Vector2 sz = MeasureTextEx(font, tok, FONT_SIZE_MAX, 1);
-    if (sz.x > max_w)
-      max_w = sz.x;
     tok = strtok_r(NULL, "\n", &sp);
   }
   free(tmp);
 
-  // Škáluj podľa šírky – využi 98 % obrazovky
-  c->font_size = FONT_SIZE_MAX;
-  if (max_w > 0.0f) {
-    float scale_w = (screenW * 0.98f) / max_w;
-    c->font_size = FONT_SIZE_MAX * scale_w;
+  // Binárne hľadanie najväčšej veľkosti fontu ktorá sa zmestí
+  float lo = FONT_SIZE_MIN;
+  float hi = FONT_SIZE_MAX;
+
+  for (int iter = 0; iter < 20; iter++) {
+    float mid = (lo + hi) * 0.5f;
+    float spacing = mid * 0.05f;
+
+    // Zisti šírku najširšieho riadku a celkovú výšku
+    float max_w = 0.0f;
+    for (int i = 0; i < c->pocet; i++) {
+      Vector2 sz = MeasureTextEx(font, c->riadky[i], mid, spacing);
+      if (sz.x > max_w)
+        max_w = sz.x;
+    }
+
+    float line_h = mid * 1.15f;
+    float total_h = c->pocet * line_h;
+
+    // Zmestí sa do 98% šírky aj 97% výšky?
+    if (max_w <= screenW * 0.98f && total_h <= screenH * 0.97f) {
+      lo = mid; // zmestí sa → skús väčší
+    } else {
+      hi = mid; // nezmestí sa → skús menší
+    }
   }
 
-// Škáluj podľa výšky – využi 97 % obrazovky, riadkovanie 1.15×
-#define LINE_SPACING 1.15f
-  float total_h = c->pocet * c->font_size * LINE_SPACING;
-  if (total_h > screenH * 0.97f) {
-    c->font_size = (screenH * 0.97f) / (c->pocet * LINE_SPACING);
-  }
-
-  if (c->font_size > FONT_SIZE_MAX)
-    c->font_size = FONT_SIZE_MAX;
-  if (c->font_size < FONT_SIZE_MIN)
-    c->font_size = FONT_SIZE_MIN;
-
-  c->line_h = c->font_size * LINE_SPACING;
+  // lo je teraz najväčšia veľkosť ktorá sa zmestí
+  c->font_size = lo;
+  c->line_h = lo * 1.15f;
   c->start_y = (screenH - c->pocet * c->line_h) * 0.5f;
   c->platna = true;
 }
