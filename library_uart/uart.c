@@ -101,6 +101,11 @@ void *uart_worker(void *arg) {
       break;
     }
 
+    // preskoč \r aj \n, do protokolu ich nechceme
+    if (c == '\r' || c == '\n') {
+      continue;
+    }
+
     pthread_mutex_lock(&chladnicka->mutex);
     if (!(chladnicka->aktual_znak < chladnicka->max_znakov - 1)) {
       if (!navis_chladnicku(chladnicka)) {
