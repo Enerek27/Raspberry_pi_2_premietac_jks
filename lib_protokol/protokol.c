@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 void dyn_pole_posun_dopredu(pole_t *p, size_t okolko) {
   if (!p || okolko == 0) {
@@ -302,6 +303,7 @@ void *parser_worker(void *arg) {
               piesen_zvac(najdena);
             }
             najdena->slohy[najdena->akt_pocet_sloh] = *s;
+            s->text = NULL;
             najdena->akt_pocet_sloh++;
 
             nasiel = true;
@@ -314,6 +316,7 @@ void *parser_worker(void *arg) {
           Piesen *p = piesen_init();
           p->id = cislo_piesne;
           p->slohy[p->akt_pocet_sloh] = *s;
+          s->text = NULL;
           p->akt_pocet_sloh++;
           pthread_mutex_lock(&premietac_chld->mutex);
           while (premietac_chld->db->max_pocet - 1 <=
@@ -321,6 +324,7 @@ void *parser_worker(void *arg) {
             db_zvac(premietac_chld->db);
           }
           premietac_chld->db->piesne[premietac_chld->db->akt_pocet] = *p;
+          p->slohy = NULL;
           premietac_chld->db->akt_pocet++;
           pthread_mutex_unlock(&premietac_chld->mutex);
           free(p);
