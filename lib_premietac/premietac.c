@@ -12,7 +12,7 @@
 #include <string.h>
 
 #define FONT_SIZE_MIN 20
-#define FONT_SIZE_MAX 300
+#define FONT_SIZE_MAX 200
 
 typedef struct {
   char **riadky; // pole reťazcov
