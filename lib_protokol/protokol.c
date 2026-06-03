@@ -267,7 +267,7 @@ void *parser_worker(void *arg) {
           continue;
         }
 
-        size_t rozdiel_pri_cisle = koniec_cisla + 2 - zaciatok;
+        int rozdiel_pri_cisle = koniec_cisla + 2 - zaciatok;
         char temp[30] = {0};
         memcpy(temp, zaciatok, rozdiel_pri_cisle);
         temp[rozdiel_pri_cisle] = '\0';
@@ -326,7 +326,7 @@ void *parser_worker(void *arg) {
           free(p);
         }
         free(s);
-        size_t offset = (koniec_textu + 3) - dyn_pole->pole;
+        int offset = (koniec_textu + 3) - dyn_pole->pole;
         dyn_pole_posun_dopredu(dyn_pole, offset);
         continue;
 
@@ -358,7 +358,7 @@ void *parser_worker(void *arg) {
       premietac_chld->akt_cislo_piesne = prep_songa;
       premietac_chld->akt_cislo_slohy = prep_strofa;
       pthread_mutex_unlock(&premietac_chld->mutex);
-      size_t offset = (prepnutie_test - dyn_pole->pole) + dlzka_copy;
+      int offset = (prepnutie_test - dyn_pole->pole) + dlzka_copy;
       dyn_pole_posun_dopredu(dyn_pole, offset);
 
       continue;
@@ -370,7 +370,7 @@ void *parser_worker(void *arg) {
       continue;
     }
     koniec_skuska += 2;
-    size_t dlzka_odpoctu = koniec_skuska - skuska;
+    int dlzka_odpoctu = koniec_skuska - skuska;
     char prikaz[30] = {0};
     memcpy(prikaz, skuska, dlzka_odpoctu);
     prikaz[dlzka_odpoctu] = '\0';
