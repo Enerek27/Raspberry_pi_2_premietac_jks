@@ -266,6 +266,7 @@ void premietac_run_raylib(const char *background_path) {
   RenderCache cache = {NULL, 0, FONT_SIZE_MAX, 0, 0, false};
   SetConfigFlags(FLAG_WINDOW_UNDECORATED);
   InitWindow(800, 600, "Premietac");
+  HideCursor();
 
   int monitor = GetCurrentMonitor();
   int screenWidth = GetMonitorWidth(monitor);
@@ -281,7 +282,7 @@ void premietac_run_raylib(const char *background_path) {
   SetTargetFPS(60);
 
   printf("[Premietac] Rozlisenie: %d x %d\n", screenWidth, screenHeight);
-
+  HideCursor();
   char font_path[4096];
   build_path(font_path, sizeof(font_path), "NotoSans-Bold.ttf");
   Font uiFont = LoadSlovakFont(font_path, FONT_SIZE_MAX);
@@ -309,7 +310,7 @@ void premietac_run_raylib(const char *background_path) {
   bool bezi_prev = false;
 
   while (!WindowShouldClose()) {
-
+    HideCursor();
     pthread_mutex_lock(&stav_prem->mutex);
     bool bezi_now = atomic_load(&stav_prem->bezi);
     bool black_now = atomic_load(&stav_prem->blackscreen);
