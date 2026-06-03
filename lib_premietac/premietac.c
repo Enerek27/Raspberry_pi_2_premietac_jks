@@ -12,7 +12,7 @@
 #include <string.h>
 
 #define FONT_SIZE_MIN 20
-#define FONT_SIZE_MAX 200
+#define FONT_SIZE_MAX 300
 
 typedef struct {
   char **riadky; // pole reťazcov
@@ -88,7 +88,6 @@ static Font LoadSlovakFont(const char *path, int fontSize) {
 
 static void cache_update(RenderCache *c, const char *text, Font font,
                          int screenW, int screenH) {
-  // Uvoľni staré riadky
   for (int i = 0; i < c->pocet; i++)
     free(c->riadky[i]);
   free(c->riadky);
@@ -100,7 +99,6 @@ static void cache_update(RenderCache *c, const char *text, Font font,
     return;
   }
 
-  // Rozdeľ text na riadky
   char *tmp = strdup(text);
   char *sp, *tok = strtok_r(tmp, "\n", &sp);
   int cap = 8;
@@ -120,24 +118,26 @@ static void cache_update(RenderCache *c, const char *text, Font font,
   }
   free(tmp);
 
-  // Font size podľa šírky (90%) aj výšky (85%)
+  // Škáluj podľa šírky – využi 98 % obrazovky
   c->font_size = FONT_SIZE_MAX;
   if (max_w > 0.0f) {
-    float scale_w = (screenW * 0.90f) / max_w;
+    float scale_w = (screenW * 0.98f) / max_w;
     c->font_size = FONT_SIZE_MAX * scale_w;
   }
-  // Obmedzenie aj výškou – celý blok musí sedieť na obrazovku
-  float line_h_test = c->font_size * 1.35f;
-  float total_h = c->pocet * line_h_test;
-  if (total_h > screenH * 0.85f) {
-    c->font_size = (screenH * 0.85f) / (c->pocet * 1.35f);
+
+// Škáluj podľa výšky – využi 97 % obrazovky, riadkovanie 1.15×
+#define LINE_SPACING 1.15f
+  float total_h = c->pocet * c->font_size * LINE_SPACING;
+  if (total_h > screenH * 0.97f) {
+    c->font_size = (screenH * 0.97f) / (c->pocet * LINE_SPACING);
   }
+
   if (c->font_size > FONT_SIZE_MAX)
     c->font_size = FONT_SIZE_MAX;
   if (c->font_size < FONT_SIZE_MIN)
     c->font_size = FONT_SIZE_MIN;
 
-  c->line_h = c->font_size * 1.35f;
+  c->line_h = c->font_size * LINE_SPACING;
   c->start_y = (screenH - c->pocet * c->line_h) * 0.5f;
   c->platna = true;
 }
