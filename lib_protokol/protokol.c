@@ -238,8 +238,8 @@ void *parser_worker(void *arg) {
     memcpy(dyn_pole->pole + dyn_pole->aktual_pocet, uart_chld->nacitane, len);
     uart_chld->aktual_znak = 0;
     dyn_pole->aktual_pocet += len;
-    pthread_mutex_unlock(&uart_chld->mutex);
 
+    pthread_mutex_unlock(&uart_chld->mutex);
     if (dyn_pole->aktual_pocet >= dyn_pole->max_pocet) {
       if (!dyn_pole_zvac(dyn_pole)) {
         dyn_pole_destroy(dyn_pole);
@@ -248,6 +248,7 @@ void *parser_worker(void *arg) {
       }
     }
     dyn_pole->pole[dyn_pole->aktual_pocet] = '\0';
+    printf("COPY: %s\n", dyn_pole->pole);
     char *skuska = strstr(dyn_pole->pole, "%$");
     if (skuska == NULL) {
       if (prijimam_piesen) {
