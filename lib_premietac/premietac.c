@@ -328,6 +328,7 @@ void premietac_run_raylib(const char *background_path) {
       db_destroy(stav_prem->db);
       stav_prem->db = db_init();
       pthread_mutex_unlock(&stav_prem->mutex);
+      atomic_store(&stav_prem->blackscreen, false);
     }
 
     bezi_prev = bezi_now;
