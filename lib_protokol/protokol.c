@@ -208,43 +208,43 @@ void nahrad_vsetky_znaky(char *s, char hladaj, char nahrad) {
 
 void *parser_worker(void *arg) {
   worker_protokol_t *wp = arg;
-  Uart_chladnicka_t *uart_chld = wp->chladnicka;
+  Wifi_chladnicka_t *wifi_chld = wp->chladnicka;
   StavPremietania *premietac_chld = wp->stav;
   pole_t *dyn_pole = dyn_pole_init();
   bool prijimam_piesen = false;
   int cislo_piesne = 0;
 
-  while (atomic_load(&uart_chld->pracuj)) {
-    pthread_mutex_lock(&uart_chld->mutex);
+  while (atomic_load(&wifi_chld->pracuj)) {
+    pthread_mutex_lock(&wifi_chld->mutex);
 
-    while (uart_chld->aktual_znak == 0) {
-      pthread_cond_wait(&uart_chld->kontroluj, &uart_chld->mutex);
+    while (wifi_chld->aktual_znak == 0) {
+      pthread_cond_wait(&wifi_chld->kontroluj, &wifi_chld->mutex);
     }
 
-    if (!atomic_load(&uart_chld->pracuj)) {
-      pthread_mutex_unlock(&uart_chld->mutex);
+    if (!atomic_load(&wifi_chld->pracuj)) {
+      pthread_mutex_unlock(&wifi_chld->mutex);
       break;
     }
 
-    int len = uart_chld->aktual_znak;
+    int len = wifi_chld->aktual_znak;
     while (dyn_pole->aktual_pocet + len >= dyn_pole->max_pocet) {
       if (!dyn_pole_zvac(dyn_pole)) {
-        atomic_store(&uart_chld->pracuj, 0);
-        pthread_mutex_unlock(&uart_chld->mutex);
+        atomic_store(&wifi_chld->pracuj, 0);
+        pthread_mutex_unlock(&wifi_chld->mutex);
         dyn_pole_destroy(dyn_pole);
         pthread_exit(NULL);
       }
     }
 
-    memcpy(dyn_pole->pole + dyn_pole->aktual_pocet, uart_chld->nacitane, len);
-    uart_chld->aktual_znak = 0;
+    memcpy(dyn_pole->pole + dyn_pole->aktual_pocet, wifi_chld->nacitane, len);
+    wifi_chld->aktual_znak = 0;
     dyn_pole->aktual_pocet += len;
 
-    pthread_mutex_unlock(&uart_chld->mutex);
+    pthread_mutex_unlock(&wifi_chld->mutex);
     if (dyn_pole->aktual_pocet >= dyn_pole->max_pocet) {
       if (!dyn_pole_zvac(dyn_pole)) {
         dyn_pole_destroy(dyn_pole);
-        atomic_store(&uart_chld->pracuj, 0);
+        atomic_store(&wifi_chld->pracuj, 0);
         pthread_exit(NULL);
       }
     }
@@ -276,7 +276,7 @@ void *parser_worker(void *arg) {
         if (sscanf(temp, "$$%d$$", &cislo_slohy) != 1) {
           perror("Zly format chyba chyba pri slohe");
           dyn_pole_destroy(dyn_pole);
-          atomic_store(&uart_chld->pracuj, 0);
+          atomic_store(&wifi_chld->pracuj, 0);
           pthread_exit(NULL);
         }
         int dlzka_textu = koniec_textu - (koniec_cisla + 2);
@@ -354,7 +354,7 @@ void *parser_worker(void *arg) {
       if (sscanf(tempor, "%%|%d|%d|%%", &prep_songa, &prep_strofa) != 2) {
         perror("Chyba parsovania zly format pri prepinani");
         dyn_pole_destroy(dyn_pole);
-        atomic_store(&uart_chld->pracuj, 0);
+        atomic_store(&wifi_chld->pracuj, 0);
         pthread_exit(NULL);
       }
 
@@ -383,7 +383,7 @@ void *parser_worker(void *arg) {
     if (sscanf(prikaz, "%%$%d$%d$%%", &a, &cislo_piesne) != 2) {
       perror("Chyba priradenia prikazov nic sa nenaslo zly format");
       dyn_pole_destroy(dyn_pole);
-      atomic_store(&uart_chld->pracuj, 0);
+      atomic_store(&wifi_chld->pracuj, 0);
       pthread_exit(NULL);
     }
     switch (a) {

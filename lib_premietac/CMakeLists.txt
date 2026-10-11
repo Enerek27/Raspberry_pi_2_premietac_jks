@@ -8,7 +8,7 @@ target_include_directories(premietac PUBLIC
 
 target_link_libraries(premietac PUBLIC
     protokol
-    uart
+    wifi
     raylib
     pthread
     m

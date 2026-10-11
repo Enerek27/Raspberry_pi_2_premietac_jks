@@ -2,7 +2,7 @@
 #include "premietac.h"
 #include "protokol.h"
 #include "raylib.h"
-#include "uart.h"
+#include "wifi.h"
 
 #include <libgen.h>
 #include <pthread.h>
@@ -177,36 +177,36 @@ static void cache_update(RenderCache *c, const char *text, Font font,
 
 void premietac_run_raylib(const char *background_path) {
 
-  Uart_chladnicka_t *uart_chl = calloc(1, sizeof(Uart_chladnicka_t));
+  Wifi_chladnicka_t *wifi_chl = calloc(1, sizeof(Wifi_chladnicka_t));
 
-  if (uart_chl == NULL) {
+  if (wifi_chl == NULL) {
     perror("Chyba alokovania miesta pre uart chladnicku");
     return;
   }
 
-  uart_chl->aktual_znak = 0;
-  uart_chl->max_znakov = 50;
-  uart_chl->fd = uart_init();
-  uart_chl->nacitane = calloc(uart_chl->max_znakov, sizeof(char));
-  if (uart_chl->nacitane == NULL) {
+  wifi_chl->aktual_znak = 0;
+  wifi_chl->max_znakov = 50;
+  wifi_chl->fd = uart_init();
+  wifi_chl->nacitane = calloc(wifi_chl->max_znakov, sizeof(char));
+  if (wifi_chl->nacitane == NULL) {
     perror("Chyba alokacie miesta pre chaldnicku nacitane");
-    uart_close(uart_chl->fd);
-    free(uart_chl);
+    uart_close(wifi_chl->fd);
+    free(wifi_chl);
     return;
   }
-  pthread_cond_init(&uart_chl->kontroluj, NULL);
-  pthread_cond_init(&uart_chl->zapisuj, NULL);
-  pthread_mutex_init(&uart_chl->mutex, NULL);
-  atomic_store(&uart_chl->pracuj, true);
+  pthread_cond_init(&wifi_chl->kontroluj, NULL);
+  pthread_cond_init(&wifi_chl->zapisuj, NULL);
+  pthread_mutex_init(&wifi_chl->mutex, NULL);
+  atomic_store(&wifi_chl->pracuj, true);
 
   StavPremietania *stav_prem = calloc(1, sizeof(StavPremietania));
   if (stav_prem == NULL) {
     perror("Chyba alokacie pamate pre stav premietania");
-    pthread_cond_destroy(&uart_chl->kontroluj);
-    pthread_cond_destroy(&uart_chl->zapisuj);
-    pthread_mutex_destroy(&uart_chl->mutex);
-    free(uart_chl->nacitane);
-    free(uart_chl);
+    pthread_cond_destroy(&wifi_chl->kontroluj);
+    pthread_cond_destroy(&wifi_chl->zapisuj);
+    pthread_mutex_destroy(&wifi_chl->mutex);
+    free(wifi_chl->nacitane);
+    free(wifi_chl);
     return;
   }
   atomic_store(&stav_prem->bezi, false);
@@ -219,30 +219,30 @@ void premietac_run_raylib(const char *background_path) {
   worker_protokol_t *protokol = calloc(1, sizeof(worker_protokol_t));
   if (protokol == NULL) {
     perror("Chyba alokovania miesta pre worker protokol");
-    pthread_cond_destroy(&uart_chl->kontroluj);
-    pthread_cond_destroy(&uart_chl->zapisuj);
-    pthread_mutex_destroy(&uart_chl->mutex);
-    free(uart_chl->nacitane);
-    free(uart_chl);
+    pthread_cond_destroy(&wifi_chl->kontroluj);
+    pthread_cond_destroy(&wifi_chl->zapisuj);
+    pthread_mutex_destroy(&wifi_chl->mutex);
+    free(wifi_chl->nacitane);
+    free(wifi_chl);
     db_destroy(stav_prem->db);
     pthread_mutex_destroy(&stav_prem->mutex);
     free(stav_prem);
     return;
   }
 
-  protokol->chladnicka = uart_chl;
+  protokol->chladnicka = wifi_chl;
   protokol->stav = stav_prem;
   printf("Inicializoval som potrebne struktury\n");
   printf("Inicializujem vlakna\n");
-  pthread_t vlakno_uart;
+  pthread_t vlakno_wifi;
   pthread_t vlakno_parser;
-  if (pthread_create(&vlakno_uart, NULL, uart_worker, uart_chl) != 0) {
-    perror("Chyba vytvorenia vlakna uart");
-    pthread_cond_destroy(&uart_chl->kontroluj);
-    pthread_cond_destroy(&uart_chl->zapisuj);
-    pthread_mutex_destroy(&uart_chl->mutex);
-    free(uart_chl->nacitane);
-    free(uart_chl);
+  if (pthread_create(&vlakno_wifi, NULL, wifi_worker, wifi_chl) != 0) {
+    perror("Chyba vytvorenia vlakna wifi");
+    pthread_cond_destroy(&wifi_chl->kontroluj);
+    pthread_cond_destroy(&wifi_chl->zapisuj);
+    pthread_mutex_destroy(&wifi_chl->mutex);
+    free(wifi_chl->nacitane);
+    free(wifi_chl);
     db_destroy(stav_prem->db);
     pthread_mutex_destroy(&stav_prem->mutex);
     free(stav_prem);
@@ -251,11 +251,11 @@ void premietac_run_raylib(const char *background_path) {
   }
   if (pthread_create(&vlakno_parser, NULL, parser_worker, protokol) != 0) {
     perror("Chyba vytvorenia vlakna parser");
-    pthread_cond_destroy(&uart_chl->kontroluj);
-    pthread_cond_destroy(&uart_chl->zapisuj);
-    pthread_mutex_destroy(&uart_chl->mutex);
-    free(uart_chl->nacitane);
-    free(uart_chl);
+    pthread_cond_destroy(&wifi_chl->kontroluj);
+    pthread_cond_destroy(&wifi_chl->zapisuj);
+    pthread_mutex_destroy(&wifi_chl->mutex);
+    free(wifi_chl->nacitane);
+    free(wifi_chl);
     db_destroy(stav_prem->db);
     pthread_mutex_destroy(&stav_prem->mutex);
     free(stav_prem);
@@ -397,18 +397,18 @@ void premietac_run_raylib(const char *background_path) {
   free(cache.riadky);
   free(render_text);
   CloseWindow();
-  uart_close(uart_chl->fd);
-  atomic_store(&uart_chl->pracuj, false);
-  pthread_cond_broadcast(&uart_chl->kontroluj);
+  uart_close(wifi_chl->fd);
+  atomic_store(&wifi_chl->pracuj, false);
+  pthread_cond_broadcast(&wifi_chl->kontroluj);
 
-  pthread_join(vlakno_uart, NULL);
+  pthread_join(vlakno_wifi, NULL);
   pthread_join(vlakno_parser, NULL);
 
-  pthread_cond_destroy(&uart_chl->kontroluj);
-  pthread_cond_destroy(&uart_chl->zapisuj);
-  pthread_mutex_destroy(&uart_chl->mutex);
-  free(uart_chl->nacitane);
-  free(uart_chl);
+  pthread_cond_destroy(&wifi_chl->kontroluj);
+  pthread_cond_destroy(&wifi_chl->zapisuj);
+  pthread_mutex_destroy(&wifi_chl->mutex);
+  free(wifi_chl->nacitane);
+  free(wifi_chl);
   db_destroy(stav_prem->db);
   pthread_mutex_destroy(&stav_prem->mutex);
   free(stav_prem);

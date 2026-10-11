@@ -8,6 +8,6 @@ target_include_directories(protokol PUBLIC
 
 target_link_libraries(protokol PUBLIC
     
-    uart
+    wifi
     
 )

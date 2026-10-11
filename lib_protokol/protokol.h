@@ -1,7 +1,7 @@
 #ifndef PROTOKOL_H
 #define PROTOKOL_H
 
-#include "uart.h"
+#include "wifi.h"
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -91,7 +91,7 @@ typedef struct {
 
 typedef struct {
   StavPremietania *stav;
-  Uart_chladnicka_t *chladnicka;
+  Wifi_chladnicka_t *chladnicka;
 } worker_protokol_t;
 
 void *parser_worker(void *arg);
